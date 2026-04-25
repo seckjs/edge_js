@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>超星课程助手</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="app">
+      <section class="hero">
+        <div>
+          <h1>超星课程助手</h1>
+          <p id="pageMeta" class="page-meta">正在识别当前页面...</p>
+        </div>
+        <div class="hero-badge">AI 批阅</div>
+      </section>
+
+      <nav class="tab-bar" aria-label="主导航">
+        <button id="homeTabBtn" class="tab-btn active" type="button" data-view="home">主页</button>
+        <button id="logsTabBtn" class="tab-btn" type="button" data-view="logs">日志</button>
+        <button id="settingsTabBtn" class="tab-btn" type="button" data-view="settings">设置</button>
+      </nav>
+
+      <section id="homeView" class="view-panel active">
+        <div class="panel-head">
+          <h2>待批阅作业</h2>
+          <span id="homeSummary" class="meta-text">正在加载...</span>
+        </div>
+        <div class="home-toolbar">
+          <label class="option-row compact">
+            <input id="selectAllPendingInput" type="checkbox">
+            <span>全选</span>
+          </label>
+          <button id="batchReviewBtn" class="secondary-btn" type="button">AI 一键批阅</button>
+        </div>
+        <div id="pendingHomeworkList" class="pending-list"></div>
+      </section>
+
+      <section id="logsView" class="view-panel">
+        <div class="panel-head">
+          <h2>自动抓取结果</h2>
+          <span id="autoResultMeta" class="meta-text">暂无自动抓取数据</span>
+        </div>
+        <div id="logSummaryCards" class="summary-stack"></div>
+        <div class="panel-head subhead">
+          <h2>课程进度</h2>
+          <span id="logCourseMeta" class="meta-text">暂无课程数据</span>
+        </div>
+        <div id="courseProgressInfo" class="progress-list"></div>
+      </section>
+
+      <section id="settingsView" class="view-panel">
+        <div class="panel-head">
+          <h2>批阅设置</h2>
+          <span class="meta-text">与页面内批阅面板共用</span>
+        </div>
+
+        <label class="field-block">
+          <span class="field-label">常用 API 地址</span>
+          <div class="inline-row">
+            <select id="providerSelect" class="text-input select-input"></select>
+            <button id="testApiBtn" class="secondary-btn" type="button">测试连接</button>
+          </div>
+        </label>
+
+        <div id="testStatus" class="test-status" data-tone="neutral">尚未测试连接</div>
+
+        <label class="field-block">
+          <span class="field-label">AI 接口地址（OpenAI 兼容）</span>
+          <input id="endpointInput" class="text-input" type="text" placeholder="https://api.moonshot.cn/v1">
+        </label>
+
+        <label class="field-block">
+          <span class="field-label">API Key</span>
+          <input id="apiKeyInput" class="text-input" type="password" placeholder="请输入当前会话使用的 API Key">
+        </label>
+
+        <label class="option-row">
+          <input id="rememberApiKeyInput" type="checkbox">
+          <span>记住 API Key 到本地存储</span>
+        </label>
+
+        <label class="field-block">
+          <span class="field-label">常用模型</span>
+          <select id="modelSelect" class="text-input select-input"></select>
+        </label>
+
+        <label class="field-block">
+          <span class="field-label">模型名</span>
+          <input id="modelInput" class="text-input" type="text" placeholder="请输入模型名">
+        </label>
+
+        <label class="field-block">
+          <span class="field-label">请求超时（秒）</span>
+          <input id="timeoutInput" class="text-input" type="number" min="5" max="300" step="1" placeholder="20">
+        </label>
+
+        <label class="field-block">
+          <span class="field-label">附加批改要求</span>
+          <textarea id="extraPromptInput" class="text-area" rows="4" placeholder="可选。例如：更严格扣分；评语控制在 50 字内。"></textarea>
+        </label>
+
+        <label class="option-row">
+          <input id="autoFillInput" type="checkbox">
+          <span>自动填写评分和批语</span>
+        </label>
+
+        <label class="option-row">
+          <input id="autoSubmitInput" type="checkbox">
+          <span>全部完成后自动提交当前页</span>
+        </label>
+
+        <label class="field-block">
+          <span class="field-label">自动提交方式</span>
+          <select id="submitModeSelect" class="text-input select-input">
+            <option value="current">提交当前页</option>
+            <option value="next">提交并进入下一份</option>
+          </select>
+        </label>
+      </section>
+
+      <div id="statusBox" class="status-box">准备就绪</div>
+    </main>
+
+    <script src="review-shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
