@@ -3,17 +3,31 @@
   const BRIDGE_RESPONSE_EVENT = "__cx_edge_bridge_response__";
   const BRIDGE_TIMEOUT_MS = 30000;
   const REVIEW_SHARED = globalThis.CX_REVIEW_SHARED;
-  const API_PROVIDER_PRESETS = REVIEW_SHARED.API_PROVIDER_PRESETS;
+  const PLUGIN_GATEWAY_CONFIG = REVIEW_SHARED.PLUGIN_GATEWAY_CONFIG;
+  const API_PROVIDER_PRESETS = REVIEW_SHARED.getProviderPresets();
   const REVIEW_PANEL_SETTINGS_STORAGE_KEY = REVIEW_SHARED.STORAGE_KEYS.reviewSettings;
   const REVIEW_BATCH_QUEUE_STORAGE_KEY = REVIEW_SHARED.STORAGE_KEYS.reviewBatchQueue;
   const getSharedDefaultReviewSettings = REVIEW_SHARED.getDefaultReviewSettings;
+  const getSharedGatewayBaseUrl = REVIEW_SHARED.getGatewayBaseUrl;
+  const getSharedModelOptions = REVIEW_SHARED.getModelOptions;
   const getSharedProviderPreset = REVIEW_SHARED.getProviderPreset;
   const getSharedProviderModels = REVIEW_SHARED.getProviderModels;
   const inferSharedProviderFromEndpoint = REVIEW_SHARED.inferProviderFromEndpoint;
+  const isSharedCustomApiMode = REVIEW_SHARED.isCustomApiMode;
+  const isSharedGatewayConfigured = REVIEW_SHARED.isGatewayConfigured;
   let bridgeInjected = false;
 
   function safeText(value) {
     return String(value == null ? "" : value).trim();
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function normalizeText(value) {
@@ -1938,16 +1952,77 @@
     return getSharedDefaultReviewSettings();
   }
 
+  function getConnectionModeValue(value) {
+    return isSharedCustomApiMode(value) ? "custom_api" : "plugin_gateway";
+  }
+
+  function isGatewayModeSelected(value) {
+    return getConnectionModeValue(value) !== "custom_api";
+  }
+
   function getProviderPreset(providerId) {
     return getSharedProviderPreset(providerId);
+  }
+
+  function getProviderModels(providerId) {
+    return getSharedProviderModels(providerId);
   }
 
   function inferProviderFromEndpoint(endpoint) {
     return inferSharedProviderFromEndpoint(endpoint);
   }
 
-  function getProviderModels(providerId) {
-    return getSharedProviderModels(providerId);
+  function getGatewayBaseUrlText(rawValue) {
+    const configuredValue = safeText(rawValue);
+    if (configuredValue) {
+      return configuredValue;
+    }
+    if (!isSharedGatewayConfigured("")) {
+      return "";
+    }
+    try {
+      return getSharedGatewayBaseUrl(configuredValue);
+    } catch (error) {
+      return configuredValue || safeText(PLUGIN_GATEWAY_CONFIG.gatewayBaseUrl);
+    }
+  }
+
+  async function fetchPluginAuthState(refresh, interactive, forceRefresh) {
+    const response = await callBackgroundMessage("getPluginAuthState", {
+      refresh: !!refresh,
+      interactive: !!interactive,
+      forceRefresh: !!forceRefresh,
+    });
+    return response.state || {};
+  }
+
+  function formatPluginAuthSummary(state) {
+    if (!state || !state.configured) {
+      return "请先填写插件网关地址。";
+    }
+    if (!state.licenseConfigured) {
+      return "请先在扩展弹窗里填写插件授权码。";
+    }
+    if (state.sessionActive) {
+      return `授权已生效${state.sessionExpiresAt ? `，会话到期：${new Date(state.sessionExpiresAt).toLocaleString("zh-CN")}` : ""}`;
+    }
+    if (state.registered) {
+      return "设备已注册，但当前会话尚未激活。";
+    }
+    return state.lastError || "尚未完成设备注册。";
+  }
+
+  function renderPluginAuthState(state) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    setReviewApiTestStatus(formatPluginAuthSummary(state), state && state.sessionActive ? "success" : state && state.lastError ? "error" : "neutral");
+    if (elements.authMeta) {
+      const gatewayText = safeText(state && state.gatewayBaseUrl) || getGatewayBaseUrlText();
+      const deviceText = state && state.deviceId ? `设备 ID：${state.deviceId}` : "设备尚未注册";
+      elements.authMeta.innerHTML = `${escapeHtml(`网关：${gatewayText}`)}<br>${escapeHtml(deviceText)}`;
+    }
   }
 
   function storageLocalGet(keys) {
@@ -2070,7 +2145,7 @@
     return Object.assign({}, getDefaultReviewSettings(), response.settings || {});
   }
 
-  async function ensureReviewEndpointPermission(endpoint, requestIfMissing) {
+  async function ensureReviewEndpointPermissionLegacyUnused(endpoint, requestIfMissing) {
     const response = await callBackgroundMessage("ensureAiEndpointPermission", {
       endpoint,
       requestIfMissing: !!requestIfMissing,
@@ -2297,7 +2372,7 @@
     syncModelControls(preferredModel || (models[0] && models[0].value) || "");
   }
 
-  function applyReviewSettingsToPanel(settings) {
+  function applyReviewSettingsToPanelLegacyUnused(settings) {
     const elements = getReviewPanelElements();
     if (!elements) {
       return;
@@ -2367,7 +2442,7 @@
     schedulePersistReviewSettings();
   }
 
-  async function testReviewApiConnection() {
+  async function testReviewApiConnectionLegacyUnused() {
     const elements = getReviewPanelElements();
     if (!elements) {
       throw new Error("面板尚未初始化");
@@ -2377,7 +2452,7 @@
       throw new Error("请先填写 API 地址");
     }
     if (!config.apiKey) {
-      throw new Error("请先填写 API Key");
+      throw new Error("请先填写 API 密钥");
     }
     if (!config.model) {
       throw new Error("请先填写模型名");
@@ -2476,7 +2551,7 @@
     taskRefs.result.textContent = text || "";
   }
 
-  function readReviewPanelConfig() {
+  function readReviewPanelConfigLegacyUnused() {
     const elements = getReviewPanelElements();
     if (!elements) {
       throw new Error("面板尚未初始化");
@@ -2559,7 +2634,7 @@
     }
   }
 
-  function maybeAutoRunContinuousReview() {
+  function maybeAutoRunContinuousReviewLegacyUnused() {
     const loopState = getAutoLoopState();
     if (!loopState.active || REVIEW_AI_STATE.running) {
       return;
@@ -2585,7 +2660,7 @@
     if (!safeText(config.apiKey)) {
       setAutoLoopState(false);
       setReviewPanelBadge("缺少密钥", "error");
-      appendReviewPanelLog("连续批阅已停止：API Key 为空。", "error");
+      appendReviewPanelLog("连续批阅已停止：API 密钥为空。", "error");
       return;
     }
 
@@ -2818,22 +2893,34 @@
           box-sizing: border-box;
         }
         .panel {
+          --cx-accent: #2f6b5f;
+          --cx-bg: #f4f4f1;
+          --cx-surface: #ffffff;
+          --cx-surface-soft: #f7f7f4;
+          --cx-border: #ddddd6;
+          --cx-border-strong: #ccccc5;
+          --cx-text: #111111;
+          --cx-text-soft: #5f5f59;
+          --cx-text-muted: #74746e;
           width: min(446px, calc(100vw - 20px));
           height: min(760px, calc(100vh - 20px));
           overflow: hidden;
-          border: 1px solid rgba(27, 53, 87, 0.18);
-          border-radius: 14px;
-          background:
-            linear-gradient(180deg, rgba(248, 251, 255, 0.98) 0%, rgba(240, 246, 252, 0.98) 100%);
-          box-shadow: 0 18px 44px rgba(16, 37, 64, 0.24);
-          color: #18324b;
+          border: 1px solid var(--cx-border-strong);
+          border-radius: 12px;
+          background: var(--cx-bg);
+          box-shadow: 0 16px 38px rgba(0, 0, 0, 0.16);
+          color: var(--cx-text);
           font: 13px/1.5 "Microsoft YaHei UI", "PingFang SC", sans-serif;
           display: flex;
           flex-direction: column;
           user-select: none;
         }
+        input[type="checkbox"],
+        input[type="radio"] {
+          accent-color: var(--cx-accent);
+        }
         .panel[data-dragging="true"] {
-          box-shadow: 0 24px 54px rgba(16, 37, 64, 0.32);
+          box-shadow: 0 20px 44px rgba(0, 0, 0, 0.22);
         }
         .panel[data-collapsed="true"] {
           height: auto;
@@ -2844,32 +2931,32 @@
           justify-content: space-between;
           gap: 12px;
           padding: 10px 12px;
-          border-bottom: 1px solid rgba(76, 99, 127, 0.14);
-          background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(242, 247, 252, 0.96) 100%);
+          border-bottom: 1px solid var(--cx-border);
+          border-top: 4px solid var(--cx-accent);
+          background: var(--cx-surface);
         }
         .nav-bar {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 8px;
-          padding: 10px 12px;
-          border-bottom: 1px solid rgba(76, 99, 127, 0.12);
-          background: rgba(248, 251, 255, 0.92);
+          gap: 4px;
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--cx-border);
+          background: #ecece8;
         }
         .nav-tab {
-          border: 1px solid rgba(59, 91, 124, 0.12);
-          border-radius: 10px;
-          background: rgba(255, 255, 255, 0.9);
-          color: #4d6680;
+          border: 0;
+          border-radius: 8px;
+          background: transparent;
+          color: var(--cx-text-soft);
           font: inherit;
           font-weight: 700;
           padding: 8px 10px;
           cursor: pointer;
         }
         .nav-tab[data-active="true"] {
-          background: linear-gradient(180deg, #4b90e2 0%, #2d6fc0 100%);
-          color: #fff;
-          box-shadow: 0 8px 18px rgba(45, 111, 192, 0.18);
+          background: var(--cx-surface);
+          color: var(--cx-text);
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
         }
         .head-main {
           min-width: 0;
@@ -2879,7 +2966,7 @@
           user-select: none;
         }
         .eyebrow {
-          color: #4a75ac;
+          color: var(--cx-accent);
           font-size: 11px;
           font-weight: 700;
           letter-spacing: 0.08em;
@@ -2905,10 +2992,10 @@
         .icon-btn {
           width: 30px;
           height: 30px;
-          background: linear-gradient(180deg, #ffffff 0%, #eaf1f8 100%);
-          color: #325d8c;
+          background: var(--cx-surface);
+          color: var(--cx-text-soft);
           font-weight: 700;
-          border: 1px solid rgba(57, 88, 121, 0.18);
+          border: 1px solid var(--cx-border-strong);
         }
         .body {
           flex: 1 1 auto;
@@ -2928,9 +3015,9 @@
         .section {
           margin-top: 10px;
           padding: 12px;
-          border-radius: 12px;
-          background: rgba(255, 255, 255, 0.88);
-          border: 1px solid rgba(52, 82, 112, 0.10);
+          border-radius: 10px;
+          background: var(--cx-surface);
+          border: 1px solid var(--cx-border);
         }
         .section:first-of-type {
           margin-top: 0;
@@ -2938,9 +3025,10 @@
         .notice {
           padding: 10px 12px;
           border-radius: 10px;
-          background: linear-gradient(180deg, #f3f8fd 0%, #edf4fb 100%);
-          color: #355d85;
-          border: 1px solid rgba(74, 127, 183, 0.16);
+          background: var(--cx-surface-soft);
+          color: var(--cx-text-soft);
+          border: 1px solid var(--cx-border);
+          border-left: 3px solid var(--cx-accent);
         }
         .status-line {
           display: flex;
@@ -2955,21 +3043,27 @@
           border-radius: 999px;
           font-size: 12px;
           font-weight: 700;
-          background: #edf2f7;
-          color: #46627d;
+          background: var(--cx-surface-soft);
+          color: var(--cx-text-soft);
         }
-        .badge[data-tone="ready"] { background: #e7f7ec; color: #1e7b43; }
-        .badge[data-tone="running"] { background: #fff4dd; color: #b56b00; }
-        .badge[data-tone="error"] { background: #ffe6e6; color: #b03333; }
-        .badge[data-tone="done"] { background: #eaf0ff; color: #3459b6; }
+        .badge[data-tone="ready"],
+        .badge[data-tone="running"],
+        .badge[data-tone="done"] {
+          background: #edf4f1;
+          color: var(--cx-accent);
+        }
+        .badge[data-tone="error"] {
+          background: var(--cx-surface-soft);
+          color: var(--cx-text);
+        }
         .page-info {
-          color: #567089;
+          color: var(--cx-text-soft);
           font-size: 12px;
           font-weight: 600;
         }
         .page-hint {
           margin-top: 6px;
-          color: #7a8da0;
+          color: var(--cx-text-muted);
           font-size: 11px;
           word-break: break-all;
           display: -webkit-box;
@@ -2990,7 +3084,7 @@
         .field-label {
           display: block;
           margin-bottom: 6px;
-          color: #37536e;
+          color: #2d2d2b;
           font-size: 12px;
           font-weight: 700;
         }
@@ -2998,18 +3092,18 @@
         .text-area,
         .select-input {
           width: 100%;
-          border: 1px solid rgba(58, 93, 129, 0.16);
-          border-radius: 12px;
+          border: 1px solid var(--cx-border-strong);
+          border-radius: 10px;
           padding: 10px 12px;
-          background: rgba(255, 255, 255, 0.92);
-          color: #1f3548;
+          background: var(--cx-surface);
+          color: var(--cx-text);
           font: inherit;
           outline: none;
         }
         .text-input:focus,
         .text-area:focus {
-          border-color: rgba(64, 129, 214, 0.55);
-          box-shadow: 0 0 0 3px rgba(64, 129, 214, 0.12);
+          border-color: var(--cx-accent);
+          box-shadow: 0 0 0 3px rgba(47, 107, 95, 0.12);
         }
         .text-area {
           min-height: 76px;
@@ -3023,7 +3117,7 @@
           flex-wrap: wrap;
           gap: 10px 14px;
           margin-top: 12px;
-          color: #365066;
+          color: #3a3a36;
         }
         .option {
           display: inline-flex;
@@ -3037,60 +3131,62 @@
           margin-top: 10px;
         }
         .action-btn {
+          border: 1px solid transparent;
+          border-radius: 10px;
           padding: 10px 12px;
           font-weight: 700;
           color: #fff;
-          background: linear-gradient(180deg, #4b90e2 0%, #2d6fc0 100%);
-          box-shadow: 0 10px 18px rgba(52, 104, 168, 0.18);
+          background: var(--cx-accent);
         }
         .action-btn.alt {
-          background: linear-gradient(180deg, #7e93aa 0%, #5d7086 100%);
+          background: var(--cx-surface);
+          border-color: var(--cx-border-strong);
+          color: var(--cx-text);
         }
         .action-btn.warn {
-          background: linear-gradient(180deg, #e96e55 0%, #d5533b 100%);
+          background: #111111;
         }
         .action-btn:disabled {
           cursor: not-allowed;
           opacity: 0.62;
-          box-shadow: none;
         }
         .tiny-btn {
-          border: 0;
+          border: 1px solid transparent;
           border-radius: 10px;
           cursor: pointer;
           font: inherit;
           font-weight: 700;
           padding: 10px 12px;
           color: #fff;
-          background: linear-gradient(180deg, #4b90e2 0%, #2d6fc0 100%);
-          box-shadow: 0 8px 18px rgba(45, 111, 192, 0.18);
+          background: var(--cx-accent);
         }
         .tiny-btn.alt {
-          background: linear-gradient(180deg, #7e93aa 0%, #5d7086 100%);
+          background: var(--cx-surface);
+          border-color: var(--cx-border-strong);
+          color: var(--cx-text);
         }
         .tiny-btn:disabled {
           cursor: not-allowed;
           opacity: 0.62;
-          box-shadow: none;
         }
         .test-status {
           margin-top: 10px;
           padding: 9px 12px;
           border-radius: 10px;
-          background: #f4f8fc;
-          color: #4f6780;
+          background: var(--cx-surface-soft);
+          color: var(--cx-text-soft);
+          border: 1px solid var(--cx-border);
         }
         .test-status[data-tone="running"] {
-          background: #fff7e7;
-          color: #9a6500;
+          color: var(--cx-accent);
+          border-color: #cfe0da;
         }
         .test-status[data-tone="success"] {
-          background: #eefaf1;
-          color: #256a43;
+          color: var(--cx-accent);
+          border-color: #cfe0da;
         }
         .test-status[data-tone="error"] {
-          background: #fff0f0;
-          color: #a03f3f;
+          color: var(--cx-text);
         }
         .log-toolbar {
           display: flex;
@@ -3103,8 +3199,10 @@
           margin-top: 0;
           padding: 10px 12px;
           border-radius: 10px;
-          background: linear-gradient(180deg, #f5f9fd 0%, #edf3f8 100%);
-          color: #42627f;
+          background: var(--cx-surface-soft);
+          color: var(--cx-text-soft);
+          border: 1px solid var(--cx-border);
+          border-left: 3px solid var(--cx-accent);
           white-space: pre-wrap;
         }
         .task-list {
@@ -3117,16 +3215,22 @@
         .task-row {
           padding: 10px 12px;
           border-radius: 10px;
-          background: rgba(255, 255, 255, 0.92);
-          border: 1px solid rgba(49, 86, 120, 0.08);
+          background: var(--cx-surface);
+          border: 1px solid var(--cx-border);
         }
-        .task-row[data-state="running"] { border-color: rgba(234, 170, 65, 0.5); background: #fff9ee; }
-        .task-row[data-state="success"] { border-color: rgba(70, 157, 96, 0.35); background: #f3fbf5; }
-        .task-row[data-state="error"] { border-color: rgba(211, 84, 84, 0.35); background: #fff4f4; }
-        .task-title { font-weight: 700; color: #214364; }
+        .task-row[data-state="running"],
+        .task-row[data-state="success"] {
+          border-left: 3px solid var(--cx-accent);
+          background: #fbfcfb;
+        }
+        .task-row[data-state="error"] {
+          border-left: 3px solid #111111;
+          background: var(--cx-surface-soft);
+        }
+        .task-title { font-weight: 700; color: var(--cx-text); }
         .task-snippet {
           margin-top: 4px;
-          color: #4f6780;
+          color: var(--cx-text-soft);
           font-size: 12px;
           display: -webkit-box;
           -webkit-line-clamp: 2;
@@ -3135,12 +3239,12 @@
         }
         .task-meta {
           margin-top: 6px;
-          color: #7b8ea1;
+          color: var(--cx-text-muted);
           font-size: 11px;
         }
         .task-result {
           margin-top: 8px;
-          color: #1e3955;
+          color: var(--cx-text);
           white-space: pre-wrap;
           font-size: 12px;
         }
@@ -3154,20 +3258,24 @@
         .log-item {
           padding: 8px 10px;
           border-radius: 10px;
-          background: #f4f8fc;
-          color: #48627a;
+          background: var(--cx-surface-soft);
+          color: var(--cx-text-soft);
+          border: 1px solid var(--cx-border);
           font-size: 12px;
           white-space: pre-wrap;
           word-break: break-word;
         }
-        .log-item[data-tone="error"] { background: #fff0f0; color: #a03f3f; }
-        .log-item[data-tone="success"] { background: #eefaf1; color: #256a43; }
-        .log-item[data-tone="warn"] { background: #fff6e6; color: #9a6500; }
+        .log-item[data-tone="success"],
+        .log-item[data-tone="warn"] {
+          color: var(--cx-accent);
+          border-color: #cfe0da;
+        }
+        .log-item[data-tone="error"] { color: var(--cx-text); }
       </style>
       <div class="panel">
         <div class="head">
           <div class="head-main" id="dragHandle">
-            <div class="eyebrow">Chaoxing AI Review</div>
+            <div class="eyebrow">超星 AI 批阅</div>
             <div class="title">教师批阅助手</div>
           </div>
           <div class="head-actions">
@@ -3218,11 +3326,11 @@
                 <input class="text-input" id="endpointInput" type="text" value="https://api.moonshot.cn/v1">
               </label>
               <label class="field">
-                <span class="field-label">API Key</span>
-                <input class="text-input" id="apiKeyInput" type="password" placeholder="请输入当前会话使用的 API Key">
+                <span class="field-label">API 密钥</span>
+                <input class="text-input" id="apiKeyInput" type="password" placeholder="请输入当前会话使用的 API 密钥">
               </label>
               <div class="options" style="margin-top:10px;">
-                <label class="option"><input id="rememberApiKeyInput" type="checkbox">记住 API Key 到本地存储</label>
+                <label class="option"><input id="rememberApiKeyInput" type="checkbox">记住 API 密钥到本地存储</label>
               </div>
             <label class="field">
               <span class="field-label">常用模型</span>
@@ -3322,6 +3430,7 @@
       elements.provider.appendChild(option);
     });
     switchReviewPanelPage("home");
+    ensureGatewaySettingsUi();
 
     let collapsed = false;
     elements.toggle.addEventListener("click", () => {
@@ -3386,13 +3495,22 @@
 
     [elements.endpoint, elements.apiKey, elements.model, elements.timeout, elements.extraPrompt].forEach((node) => {
       node.addEventListener("input", () => {
+        const gatewayMode = isGatewayModeSelected(getReviewPanelConnectionMode(elements));
         if (node === elements.endpoint) {
+          if (gatewayMode) {
+            if (elements.panel) {
+              elements.panel.dataset.gatewayBaseUrl = safeText(elements.endpoint.value);
+            }
+            setReviewApiTestStatus("插件网关地址已变更，请重新校验授权。", "neutral");
+            schedulePersistReviewSettings();
+            return;
+          }
           elements.provider.value = inferProviderFromEndpoint(elements.endpoint.value);
           populateModelOptions(elements.provider.value, safeText(elements.model.value));
           setReviewApiTestStatus("API 地址已修改，请重新测试连接。", "neutral");
         }
-        if (node === elements.apiKey) {
-          setReviewApiTestStatus("API Key 已修改，请重新测试连接。", "neutral");
+        if (node === elements.apiKey && !gatewayMode) {
+          setReviewApiTestStatus("API 密钥已修改，请重新测试连接。", "neutral");
         }
         if (node === elements.model) {
           syncModelControls(elements.model.value);
@@ -3436,17 +3554,343 @@
     return elements;
   }
 
-  async function applySingleAiResult(question, normalizedResult) {
-    return callBridge("applyGradingRows", {
-      rows: [
-        {
-          question_hash_id: question.question_hash_id,
-          q_content: question.q_content,
-          grading_score: normalizedResult.grading_score,
-          grading_comment: normalizedResult.grading_comment,
-        },
-      ],
-      submitAfterApply: false,
+  async function ensureReviewEndpointPermission(endpoint, requestIfMissing) {
+    void endpoint;
+    const state = await fetchPluginAuthState(!!requestIfMissing, !!requestIfMissing, !!requestIfMissing);
+    renderPluginAuthState(state);
+    return {
+      ok: !!state.sessionActive,
+      state,
+    };
+  }
+
+  function ensureGatewaySettingsUi() {
+    const elements = getReviewPanelElements();
+    if (!elements || elements.gatewayUiReady) {
+      return;
+    }
+    elements.gatewayUiReady = true;
+
+    if (elements.provider) {
+      const providerField = elements.provider.closest(".field");
+      if (providerField) {
+        providerField.style.display = "none";
+      }
+    }
+
+    if (elements.apiKey) {
+      elements.apiKey.value = "";
+      elements.apiKey.disabled = true;
+      const apiKeyField = elements.apiKey.closest(".field");
+      if (apiKeyField) {
+        apiKeyField.style.display = "none";
+      }
+    }
+
+    if (elements.rememberApiKey) {
+      const rememberBlock = elements.rememberApiKey.closest(".options");
+      if (rememberBlock) {
+        rememberBlock.style.display = "none";
+      }
+    }
+
+    if (elements.endpoint) {
+      elements.endpoint.readOnly = true;
+      elements.endpoint.value = getGatewayBaseUrlText();
+      const endpointField = elements.endpoint.closest(".field");
+      const endpointLabel = endpointField ? endpointField.querySelector(".field-label") : null;
+      if (endpointLabel) {
+        endpointLabel.textContent = "插件网关地址";
+      }
+    }
+
+    if (elements.testButton) {
+      elements.testButton.textContent = "校验授权";
+    }
+
+    if (!elements.authMeta && elements.testStatus && elements.testStatus.parentElement) {
+      const authMeta = document.createElement("div");
+      authMeta.className = "notice";
+      authMeta.style.marginTop = "10px";
+      authMeta.textContent = "授权码只在扩展弹窗中配置，页面内面板不会显示长期密钥。";
+      elements.testStatus.insertAdjacentElement("afterend", authMeta);
+      elements.authMeta = authMeta;
+    }
+  }
+
+  function collectPersistedReviewSettings() {
+    const elements = getReviewPanelElements();
+    const defaults = getDefaultReviewSettings();
+    if (!elements) {
+      return defaults;
+    }
+    const selectedModelValue = safeText(elements.modelSelect.value);
+    const customModelValue = safeText(elements.model.value);
+    return {
+      model:
+        selectedModelValue && selectedModelValue !== "__custom__"
+          ? selectedModelValue
+          : customModelValue,
+      timeoutSeconds: Number(elements.timeout.value),
+      extraPrompt: safeText(elements.extraPrompt.value),
+      autoFill: !!elements.autoFill.checked,
+      autoSubmit: !!elements.autoSubmit.checked,
+      submitMode: safeText(elements.submitMode.value) || "current",
+    };
+  }
+
+  function syncModelControls(modelValue) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    const value = safeText(modelValue);
+    const options = Array.from(elements.modelSelect.options || []);
+    const matched = options.find((option) => option.value === value);
+    if (matched) {
+      elements.modelSelect.value = value;
+      elements.model.value = value;
+      elements.model.hidden = true;
+      elements.model.placeholder = "";
+      return;
+    }
+    elements.modelSelect.value = "__custom__";
+    elements.model.hidden = false;
+    elements.model.value = value;
+    elements.model.placeholder = "请输入自定义模型名";
+  }
+
+  function populateModelOptions(preferredModel) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    const models = getSharedModelOptions();
+    elements.modelSelect.innerHTML = "";
+
+    models.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.value;
+      option.textContent = item.label;
+      elements.modelSelect.appendChild(option);
+    });
+
+    const customOption = document.createElement("option");
+    customOption.value = "__custom__";
+    customOption.textContent = "自定义模型";
+    elements.modelSelect.appendChild(customOption);
+
+    syncModelControls(preferredModel || (models[0] && models[0].value) || "");
+  }
+
+  function applyReviewSettingsToPanel(settings) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    ensureGatewaySettingsUi();
+    const merged = Object.assign({}, getDefaultReviewSettings(), settings || {});
+    elements.endpoint.value = getGatewayBaseUrlText();
+    populateModelOptions(safeText(merged.model));
+    elements.timeout.value = String(Number(merged.timeoutSeconds) || 20);
+    elements.extraPrompt.value = safeText(merged.extraPrompt);
+    elements.autoFill.checked = merged.autoFill !== false;
+    elements.autoSubmit.checked = !!merged.autoSubmit;
+    elements.submitMode.value = safeText(merged.submitMode) || "current";
+    elements.submitMode.disabled = REVIEW_AI_STATE.running || !elements.autoSubmit.checked;
+    setReviewApiTestStatus("尚未测试连接", "neutral");
+  }
+
+  async function hydrateReviewPanelSettings() {
+    try {
+      applyReviewSettingsToPanel(await fetchStoredReviewSettings());
+      renderPluginAuthState(await fetchPluginAuthState(false, false, false));
+    } catch (error) {
+      appendReviewPanelLog(`读取面板设置失败：${error.message}`, "warn");
+      applyReviewSettingsToPanel(getDefaultReviewSettings());
+    } finally {
+      REVIEW_AI_STATE.settingsHydrated = true;
+    }
+  }
+
+  async function getStoredReviewSettings() {
+    try {
+      return await fetchStoredReviewSettings();
+    } catch (error) {
+      return getDefaultReviewSettings();
+    }
+  }
+
+  function schedulePersistReviewSettings() {
+    if (REVIEW_AI_STATE.persistTimer) {
+      window.clearTimeout(REVIEW_AI_STATE.persistTimer);
+    }
+    REVIEW_AI_STATE.persistTimer = window.setTimeout(async () => {
+      REVIEW_AI_STATE.persistTimer = null;
+      try {
+        await persistStoredReviewSettings(collectPersistedReviewSettings());
+      } catch (error) {
+        appendReviewPanelLog(`保存面板设置失败：${error.message}`, "warn");
+      }
+    }, 250);
+  }
+
+  function applyProviderPreset() {
+    populateModelOptions(getDefaultReviewSettings().model);
+    setReviewApiTestStatus("模型列表已刷新。", "neutral");
+    schedulePersistReviewSettings();
+  }
+
+  async function testReviewApiConnection() {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      throw new Error("面板尚未初始化");
+    }
+    await persistStoredReviewSettings(collectPersistedReviewSettings());
+    const config = readReviewPanelConfig();
+    if (!isSharedGatewayConfigured()) {
+      throw new Error("请先填写插件网关地址");
+    }
+    if (!config.model) {
+      throw new Error("请先填写模型名");
+    }
+
+    setReviewApiTestStatus("正在校验插件授权...", "running");
+    const response = await callBackgroundMessage("refreshPluginGatewaySession", {
+      timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+    });
+    const state = await fetchPluginAuthState(true, false, false);
+    renderPluginAuthState(state);
+    appendReviewPanelLog(response && response.message ? response.message : "插件网关授权正常，可开始批阅。", "success");
+    return response;
+  }
+
+  function readReviewPanelConfig() {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      throw new Error("面板尚未初始化");
+    }
+    return {
+      model:
+        safeText(elements.modelSelect.value) && safeText(elements.modelSelect.value) !== "__custom__"
+          ? safeText(elements.modelSelect.value)
+          : safeText(elements.model.value),
+      timeoutSeconds: Number(elements.timeout.value),
+      extraPrompt: safeText(elements.extraPrompt.value),
+      autoFill: !!elements.autoFill.checked,
+      autoSubmit: !!elements.autoSubmit.checked,
+      submitMode: safeText(elements.submitMode.value) || "current",
+    };
+  }
+
+  function setReviewPanelRunning(running) {
+    REVIEW_AI_STATE.running = running;
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    elements.start.disabled = running;
+    elements.stop.disabled = !running;
+    elements.refresh.disabled = running;
+    if (elements.provider) {
+      elements.provider.disabled = true;
+    }
+    elements.modelSelect.disabled = running;
+    if (elements.endpoint) {
+      elements.endpoint.disabled = true;
+    }
+    if (elements.apiKey) {
+      elements.apiKey.disabled = true;
+    }
+    if (elements.rememberApiKey) {
+      elements.rememberApiKey.disabled = true;
+    }
+    elements.model.disabled = running;
+    elements.timeout.disabled = running;
+    elements.extraPrompt.disabled = running;
+    elements.autoFill.disabled = running;
+    elements.autoSubmit.disabled = running;
+    elements.submitMode.disabled = running || !elements.autoSubmit.checked;
+    elements.testButton.disabled = running;
+  }
+
+  async function updateReviewPanelSummary(forceRefresh) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return 0;
+    }
+
+    const requestId = REVIEW_AI_STATE.summaryRequestId + 1;
+    REVIEW_AI_STATE.summaryRequestId = requestId;
+    elements.pageHint.textContent = `${document.title || "(无标题)"} | ${window.location.href}`;
+
+    const quickCount = countLikelySubjectiveQuestions();
+    elements.pageInfo.textContent =
+      quickCount > 0 ? `检测到 ${quickCount} 个题块，正在识别题目...` : "正在识别题目...";
+
+    const cacheKey = getReviewQuestionCacheKey();
+    if (!forceRefresh && REVIEW_AI_STATE.cachedQuestionKey === cacheKey && REVIEW_AI_STATE.cachedQuestions.length) {
+      elements.pageInfo.textContent = `已识别 ${REVIEW_AI_STATE.cachedQuestions.length} 道主观题`;
+      return REVIEW_AI_STATE.cachedQuestions.length;
+    }
+
+    try {
+      const questions = await extractQuestionRecordsAsync();
+      if (REVIEW_AI_STATE.summaryRequestId !== requestId) {
+        return questions.length;
+      }
+      REVIEW_AI_STATE.cachedQuestionKey = cacheKey;
+      REVIEW_AI_STATE.cachedQuestions = questions;
+      elements.pageInfo.textContent = `已识别 ${questions.length} 道主观题`;
+      return questions.length;
+    } catch (error) {
+      if (REVIEW_AI_STATE.summaryRequestId === requestId) {
+        elements.pageInfo.textContent = "题目识别失败";
+        appendReviewPanelLog(`题目识别失败：${error.message}`, "error");
+      }
+      return 0;
+    }
+  }
+
+  function maybeAutoRunContinuousReview() {
+    const loopState = getAutoLoopState();
+    if (!loopState.active || REVIEW_AI_STATE.running) {
+      return;
+    }
+
+    if (!REVIEW_AI_STATE.settingsHydrated) {
+      return;
+    }
+
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+
+    const config = readReviewPanelConfig();
+    const canContinue = config.autoFill && config.autoSubmit && config.submitMode === "next";
+    if (!canContinue) {
+      setAutoLoopState(false);
+      REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+      return;
+    }
+
+    const pageKey = getReviewQuestionCacheKey();
+    if (REVIEW_AI_STATE.autoLoopLastStartedKey === pageKey) {
+      return;
+    }
+
+    if (countLikelySubjectiveQuestions() <= 0) {
+      return;
+    }
+
+    REVIEW_AI_STATE.autoLoopLastStartedKey = pageKey;
+    elements.progress.textContent = "检测到连续批阅任务，正在自动开始本页批改...";
+    appendReviewPanelLog("已进入下一份，自动开始批改。", "info");
+    startSequentialAiReview({ autoTriggered: true }).catch((error) => {
+      appendReviewPanelLog(`自动开始失败：${error.message}`, "error");
+      setAutoLoopState(false);
+      REVIEW_AI_STATE.autoLoopLastStartedKey = "";
     });
   }
 
@@ -3461,11 +3905,167 @@
     }
 
     const config = readReviewPanelConfig();
+    if (!config.model) {
+      throw new Error("请先填写模型名。");
+    }
+
+    const authState = await fetchPluginAuthState(false, false, false);
+    renderPluginAuthState(authState);
+    if (!authState.licenseConfigured) {
+      throw new Error("请先在扩展弹窗中填写插件授权码。");
+    }
+    if (!authState.configured) {
+      throw new Error("请先填写插件网关地址。");
+    }
+
+    const cacheKey = getReviewQuestionCacheKey();
+    let questions =
+      REVIEW_AI_STATE.cachedQuestionKey === cacheKey && REVIEW_AI_STATE.cachedQuestions.length
+        ? REVIEW_AI_STATE.cachedQuestions
+        : [];
+
+    if (!questions.length) {
+      elements.progress.textContent = "正在解析当前页题目，请稍候...";
+      await sleep(0);
+      questions = await extractQuestionRecordsAsync();
+      REVIEW_AI_STATE.cachedQuestionKey = cacheKey;
+      REVIEW_AI_STATE.cachedQuestions = questions;
+    }
+
+    if (!questions.length) {
+      throw new Error("当前页没有识别到可批改的主观题。");
+    }
+
+    const continuousMode = config.autoFill && config.autoSubmit && config.submitMode === "next";
+    if (opts.autoTriggered && !continuousMode) {
+      setAutoLoopState(false);
+      REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+      throw new Error("连续批阅条件不满足（需要开启自动回填、自动提交并选择“提交并进入下一份”）。");
+    }
+    if (continuousMode) {
+      setAutoLoopState(true);
+    } else if (!opts.autoTriggered) {
+      setAutoLoopState(false);
+      REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+    }
+
+    REVIEW_AI_STATE.cancelled = false;
+    REVIEW_AI_STATE.autoLoopLastStartedKey = cacheKey;
+    setReviewPanelRunning(true);
+    clearReviewTaskList();
+    elements.log.innerHTML = "";
+    setReviewPanelBadge("执行中", "running");
+    elements.progress.textContent = `共 ${questions.length} 题，准备开始逐题调用 AI。`;
+    appendReviewPanelLog(`开始逐题 AI 批阅，共 ${questions.length} 题。`, "info");
+
+    try {
+      let failureCount = 0;
+      for (let index = 0; index < questions.length; index += 1) {
+        if (REVIEW_AI_STATE.cancelled) {
+          elements.progress.textContent = `已在第 ${index + 1} 题前停止。`;
+          appendReviewPanelLog("逐题 AI 批阅已中止。", "warn");
+          setReviewPanelBadge("已停止", "error");
+          return;
+        }
+
+        const question = questions[index];
+        const taskRefs = createTaskRow(question, index);
+        updateTaskRow(taskRefs, "running", "正在请求 AI...");
+        elements.progress.textContent = `正在处理第 ${index + 1}/${questions.length} 题`;
+
+        try {
+          const aiResponse = await callBackgroundMessage("callAiChat", {
+            model: config.model,
+            temperature: 0.2,
+            timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+            messages: buildAiMessages(question, config, index, questions.length),
+          });
+
+          const normalizedResult = normalizeAiReviewResult(aiResponse.content, question);
+          let fillSummary = "未回填";
+
+          if (config.autoFill) {
+            const fillResult = await applySingleAiResult(question, normalizedResult);
+            fillSummary = `回填 ${Number(fillResult && fillResult.filled_count) || 0} 项`;
+          }
+
+          updateTaskRow(
+            taskRefs,
+            "success",
+            `得分: ${normalizedResult.grading_score}\n评语: ${normalizedResult.grading_comment}\n${fillSummary}`
+          );
+          appendReviewPanelLog(`第 ${index + 1} 题已完成 AI 处理。`, "success");
+        } catch (error) {
+          failureCount += 1;
+          updateTaskRow(taskRefs, "error", error.message);
+          appendReviewPanelLog(`第 ${index + 1} 题处理失败：${error.message}`, "error");
+        }
+      }
+
+      if (config.autoSubmit && config.autoFill && !REVIEW_AI_STATE.cancelled && failureCount === 0) {
+        const submitLabel = config.submitMode === "next" ? "提交并进入下一份" : "提交当前页";
+        elements.progress.textContent = `题目处理完成，正在${submitLabel}...`;
+        const submitResult = await callBridge("submitCurrentPage", {
+          mode: config.submitMode || "current",
+        });
+        if (submitResult && submitResult.ok) {
+          appendReviewPanelLog(`已自动执行${submitLabel}。`, "success");
+          if (config.submitMode === "next") {
+            elements.progress.textContent = "已提交，等待进入下一份并自动继续...";
+            setReviewPanelBadge("等待下一份", "running");
+          } else {
+            elements.progress.textContent = `逐题 AI 批阅结束，共处理 ${questions.length} 题。`;
+            setReviewPanelBadge("已完成", "ready");
+            setAutoLoopState(false);
+            REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+          }
+        } else {
+          throw new Error((submitResult && submitResult.error) || "提交失败");
+        }
+      } else {
+        if (config.autoSubmit && failureCount > 0) {
+          setAutoLoopState(false);
+          REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+        }
+        elements.progress.textContent = `逐题 AI 批阅结束，共处理 ${questions.length} 题。`;
+        setReviewPanelBadge(failureCount > 0 ? "部分失败" : "已完成", failureCount > 0 ? "error" : "ready");
+      }
+    } finally {
+      setReviewPanelRunning(false);
+      renderPluginAuthState(await fetchPluginAuthState(false, false, false).catch(() => null));
+    }
+  }
+
+  async function applySingleAiResult(question, normalizedResult) {
+    return callBridge("applyGradingRows", {
+      rows: [
+        {
+          question_hash_id: question.question_hash_id,
+          q_content: question.q_content,
+          grading_score: normalizedResult.grading_score,
+          grading_comment: normalizedResult.grading_comment,
+        },
+      ],
+      submitAfterApply: false,
+    });
+  }
+
+  async function startSequentialAiReviewLegacyUnused(options) {
+    const opts = options || {};
+    const elements = ensureReviewPanel();
+    if (!elements) {
+      throw new Error("当前页面不是教师批阅页，无法启动逐题 AI。");
+    }
+    if (REVIEW_AI_STATE.running) {
+      throw new Error("逐题 AI 批阅正在运行中。");
+    }
+
+    const config = readReviewPanelConfig();
     if (!config.endpoint) {
       throw new Error("请填写 AI 接口地址。");
     }
     if (!config.apiKey) {
-      throw new Error("请填写 API Key。");
+      throw new Error("请填写 API 密钥。");
     }
     if (!config.model) {
       throw new Error("请填写模型名。");
@@ -3609,6 +4209,492 @@
       REVIEW_AI_STATE.cancelled = false;
       setReviewPanelRunning(false);
       void updateReviewPanelSummary(true);
+    }
+  }
+
+  function renderCustomReviewPanelState(state) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    const providerText = safeText((state && state.provider) || (elements.provider && elements.provider.value) || "custom");
+    const endpointText = safeText((state && state.endpoint) || (elements.endpoint && elements.endpoint.value));
+    setReviewApiTestStatus(
+      safeText(state && state.message) || (endpointText ? "自定义 API 模式已可测试。" : "请先配置自定义 API 地址。"),
+      state && state.ok ? "success" : "neutral"
+    );
+    if (elements.authMeta) {
+      elements.authMeta.innerHTML = `${escapeHtml(`提供方：${providerText}`)}<br>${escapeHtml(`接口地址：${endpointText || "未配置"}`)}`;
+    }
+  }
+
+  function getReviewPanelConnectionMode(elements, fallback) {
+    const sourceElements = elements || getReviewPanelElements();
+    const rawMode =
+      safeText(sourceElements && sourceElements.panel && sourceElements.panel.dataset.connectionMode) ||
+      safeText(fallback && fallback.connectionMode);
+    return getConnectionModeValue(rawMode);
+  }
+
+  async function ensureReviewEndpointPermission(endpoint, requestIfMissing) {
+    if (!isGatewayModeSelected(getReviewPanelConnectionMode())) {
+      const response = await callBackgroundMessage("ensureAiEndpointPermission", {
+        endpoint,
+        requestIfMissing: !!requestIfMissing,
+      });
+      return response.result || { ok: true };
+    }
+    const state = await fetchPluginAuthState(!!requestIfMissing, !!requestIfMissing, !!requestIfMissing);
+    renderPluginAuthState(state);
+    return {
+      ok: !!state.sessionActive,
+      state,
+    };
+  }
+
+  function ensureGatewaySettingsUi(settings) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    const connectionMode = getReviewPanelConnectionMode(elements, settings);
+    const gatewayMode = isGatewayModeSelected(connectionMode);
+    if (elements.panel) {
+      elements.panel.dataset.connectionMode = connectionMode;
+    }
+
+    if (!elements.authMeta && elements.testStatus && elements.testStatus.parentElement) {
+      const authMeta = document.createElement("div");
+      authMeta.className = "notice";
+      authMeta.style.marginTop = "10px";
+      elements.testStatus.insertAdjacentElement("afterend", authMeta);
+      elements.authMeta = authMeta;
+    }
+
+    if (elements.provider) {
+      const providerField = elements.provider.closest(".field");
+      if (providerField) {
+        providerField.style.display = gatewayMode ? "none" : "";
+      }
+      elements.provider.disabled = REVIEW_AI_STATE.running || gatewayMode;
+    }
+
+    if (elements.apiKey) {
+      const apiKeyField = elements.apiKey.closest(".field");
+      if (apiKeyField) {
+        apiKeyField.style.display = gatewayMode ? "none" : "";
+      }
+      elements.apiKey.disabled = REVIEW_AI_STATE.running || gatewayMode;
+      if (gatewayMode) {
+        elements.apiKey.value = "";
+      }
+    }
+
+    if (elements.rememberApiKey) {
+      const rememberBlock = elements.rememberApiKey.closest(".options");
+      if (rememberBlock) {
+        rememberBlock.style.display = gatewayMode ? "none" : "";
+      }
+      elements.rememberApiKey.disabled = REVIEW_AI_STATE.running || gatewayMode;
+    }
+
+    if (elements.endpoint) {
+      elements.endpoint.readOnly = false;
+      elements.endpoint.disabled = REVIEW_AI_STATE.running;
+      const endpointField = elements.endpoint.closest(".field");
+      const endpointLabel = endpointField ? endpointField.querySelector(".field-label") : null;
+      if (endpointLabel) {
+        endpointLabel.textContent = gatewayMode ? "插件网关地址" : "API 地址";
+      }
+      if (gatewayMode) {
+        elements.endpoint.placeholder = "https://api.example.com";
+        elements.endpoint.value = getGatewayBaseUrlText(safeText(settings && settings.gatewayBaseUrl) || safeText(elements.panel && elements.panel.dataset.gatewayBaseUrl));
+      } else {
+        elements.endpoint.placeholder = "https://api.example.com/v1";
+      }
+    }
+
+    if (elements.testButton) {
+      elements.testButton.textContent = gatewayMode ? "校验授权" : "测试 API";
+    }
+  }
+
+  function collectPersistedReviewSettings() {
+    const elements = getReviewPanelElements();
+    const defaults = getDefaultReviewSettings();
+    if (!elements) {
+      return defaults;
+    }
+    const connectionMode = getReviewPanelConnectionMode(elements);
+    const endpoint = safeText(elements.endpoint.value);
+    const selectedModelValue = safeText(elements.modelSelect.value);
+    const customModelValue = safeText(elements.model.value);
+    return {
+      connectionMode,
+      gatewayBaseUrl:
+        connectionMode === "custom_api"
+          ? safeText(elements.panel && elements.panel.dataset.gatewayBaseUrl)
+          : endpoint,
+      provider:
+        connectionMode === "custom_api"
+          ? safeText(elements.provider.value) || inferProviderFromEndpoint(endpoint)
+          : "plugin_gateway",
+      endpoint: connectionMode === "custom_api" ? endpoint : "",
+      apiKey: connectionMode === "custom_api" ? safeText(elements.apiKey.value) : "",
+      rememberApiKey: connectionMode === "custom_api" ? !!elements.rememberApiKey.checked : false,
+      model:
+        selectedModelValue && selectedModelValue !== "__custom__"
+          ? selectedModelValue
+          : customModelValue,
+      timeoutSeconds: Number(elements.timeout.value),
+      extraPrompt: safeText(elements.extraPrompt.value),
+      autoFill: !!elements.autoFill.checked,
+      autoSubmit: !!elements.autoSubmit.checked,
+      submitMode: safeText(elements.submitMode.value) || "current",
+    };
+  }
+
+  function populateModelOptions(preferredModel) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    const connectionMode = getReviewPanelConnectionMode(elements);
+    const providerId = safeText(elements.provider.value) || inferProviderFromEndpoint(elements.endpoint.value) || "custom";
+    const models = getSharedModelOptions(connectionMode, providerId);
+    elements.modelSelect.innerHTML = "";
+
+    models.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.value;
+      option.textContent = item.label;
+      elements.modelSelect.appendChild(option);
+    });
+
+    const customOption = document.createElement("option");
+    customOption.value = "__custom__";
+    customOption.textContent = "自定义模型";
+    elements.modelSelect.appendChild(customOption);
+
+    syncModelControls(preferredModel || (models[0] && models[0].value) || "");
+  }
+
+  function applyReviewSettingsToPanel(settings) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    const merged = Object.assign({}, getDefaultReviewSettings(), settings || {});
+    const connectionMode = getConnectionModeValue(merged.connectionMode);
+    if (elements.panel) {
+      elements.panel.dataset.connectionMode = connectionMode;
+      elements.panel.dataset.gatewayBaseUrl = safeText(merged.gatewayBaseUrl);
+    }
+    ensureGatewaySettingsUi(merged);
+
+    if (connectionMode === "custom_api") {
+      elements.provider.value = safeText(merged.provider) || inferProviderFromEndpoint(merged.endpoint) || "custom";
+      elements.endpoint.value = safeText(merged.endpoint);
+      elements.apiKey.value = safeText(merged.apiKey);
+      elements.rememberApiKey.checked = !!merged.rememberApiKey;
+    } else {
+      elements.provider.value = "custom";
+      elements.endpoint.value = getGatewayBaseUrlText(merged.gatewayBaseUrl);
+      elements.apiKey.value = "";
+      elements.rememberApiKey.checked = false;
+    }
+
+    populateModelOptions(safeText(merged.model));
+    elements.timeout.value = String(Number(merged.timeoutSeconds) || 20);
+    elements.extraPrompt.value = safeText(merged.extraPrompt);
+    elements.autoFill.checked = merged.autoFill !== false;
+    elements.autoSubmit.checked = !!merged.autoSubmit;
+    elements.submitMode.value = safeText(merged.submitMode) || "current";
+    elements.submitMode.disabled = REVIEW_AI_STATE.running || !elements.autoSubmit.checked;
+    if (connectionMode === "custom_api") {
+      renderCustomReviewPanelState({
+        provider: safeText(merged.provider) || inferProviderFromEndpoint(merged.endpoint),
+        endpoint: safeText(merged.endpoint),
+        message: "自定义 API 模式会使用你自己的接口地址和 API 密钥。",
+      });
+    } else {
+      setReviewApiTestStatus("开始批阅前请先校验插件网关授权。", "neutral");
+    }
+  }
+
+  async function hydrateReviewPanelSettings() {
+    try {
+      const settings = await fetchStoredReviewSettings();
+      applyReviewSettingsToPanel(settings);
+      if (isGatewayModeSelected(settings.connectionMode)) {
+        renderPluginAuthState(await fetchPluginAuthState(false, false, false));
+      }
+    } catch (error) {
+      appendReviewPanelLog(`读取面板设置失败：${error.message}`, "warn");
+      applyReviewSettingsToPanel(getDefaultReviewSettings());
+    } finally {
+      REVIEW_AI_STATE.settingsHydrated = true;
+    }
+  }
+
+  function schedulePersistReviewSettings() {
+    if (REVIEW_AI_STATE.persistTimer) {
+      window.clearTimeout(REVIEW_AI_STATE.persistTimer);
+    }
+    REVIEW_AI_STATE.persistTimer = window.setTimeout(async () => {
+      REVIEW_AI_STATE.persistTimer = null;
+      try {
+        await persistStoredReviewSettings(collectPersistedReviewSettings());
+      } catch (error) {
+        appendReviewPanelLog(`保存面板设置失败：${error.message}`, "warn");
+      }
+    }, 250);
+  }
+
+  function applyProviderPreset(providerId) {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      return;
+    }
+    const preset = getProviderPreset(providerId);
+    if (elements.panel) {
+      elements.panel.dataset.connectionMode = "custom_api";
+    }
+    ensureGatewaySettingsUi({ connectionMode: "custom_api" });
+    elements.provider.value = preset.id;
+    if (preset.endpoint) {
+      elements.endpoint.value = preset.endpoint;
+    }
+    populateModelOptions(safeText(preset.model));
+    renderCustomReviewPanelState({
+      provider: preset.id,
+      endpoint: safeText(elements.endpoint.value),
+      message: "接口提供方已变更，请重新测试自定义 API。",
+    });
+    schedulePersistReviewSettings();
+  }
+
+  async function testReviewApiConnection() {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      throw new Error("面板尚未初始化。");
+    }
+    const config = readReviewPanelConfig();
+    if (config.connectionMode === "custom_api") {
+      if (!config.endpoint) {
+        throw new Error("请先填写自定义 API 地址。");
+      }
+      if (!config.apiKey) {
+        throw new Error("请先填写自定义 API 密钥。");
+      }
+      if (!config.model) {
+        throw new Error("请先填写模型名。");
+      }
+      const response = await callBackgroundMessage("testAiEndpoint", {
+        connectionMode: config.connectionMode,
+        provider: config.provider,
+        endpoint: config.endpoint,
+        apiKey: config.apiKey,
+        model: config.model,
+        timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+      });
+      renderCustomReviewPanelState({
+        ok: true,
+        provider: config.provider,
+        endpoint: config.endpoint,
+        message: `自定义 API 已就绪：${config.model}`,
+      });
+      appendReviewPanelLog("自定义 API 测试通过。", "success");
+      return response;
+    }
+
+    if (!isSharedGatewayConfigured(config.gatewayBaseUrl)) {
+      throw new Error("请先填写插件网关地址。");
+    }
+    if (!config.model) {
+      throw new Error("请先填写模型名。");
+    }
+
+    setReviewApiTestStatus("正在校验插件网关授权...", "running");
+    const response = await callBackgroundMessage("refreshPluginGatewaySession", {
+      connectionMode: config.connectionMode,
+      timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+    });
+    renderPluginAuthState(await fetchPluginAuthState(true, false, false));
+    appendReviewPanelLog(response && response.message ? response.message : "插件网关授权已就绪。", "success");
+    return response;
+  }
+
+  function readReviewPanelConfig() {
+    const elements = getReviewPanelElements();
+    if (!elements) {
+      throw new Error("Panel has not been initialized yet.");
+    }
+    const connectionMode = getReviewPanelConnectionMode(elements);
+    return {
+      connectionMode,
+      gatewayBaseUrl:
+        connectionMode === "custom_api"
+          ? safeText(elements.panel && elements.panel.dataset.gatewayBaseUrl)
+          : safeText(elements.endpoint.value),
+      provider:
+        connectionMode === "custom_api"
+          ? safeText(elements.provider.value) || inferProviderFromEndpoint(elements.endpoint.value)
+          : "plugin_gateway",
+      endpoint: connectionMode === "custom_api" ? safeText(elements.endpoint.value) : "",
+      apiKey: connectionMode === "custom_api" ? safeText(elements.apiKey.value) : "",
+      model:
+        safeText(elements.modelSelect.value) && safeText(elements.modelSelect.value) !== "__custom__"
+          ? safeText(elements.modelSelect.value)
+          : safeText(elements.model.value),
+      timeoutSeconds: Number(elements.timeout.value),
+      extraPrompt: safeText(elements.extraPrompt.value),
+      autoFill: !!elements.autoFill.checked,
+      autoSubmit: !!elements.autoSubmit.checked,
+      submitMode: safeText(elements.submitMode.value) || "current",
+    };
+  }
+
+  async function startSequentialAiReview(options) {
+    const config = readReviewPanelConfig();
+    if (config.connectionMode === "custom_api") {
+      return startSequentialAiReviewLegacyUnused(options);
+    }
+
+    const opts = options || {};
+    const elements = ensureReviewPanel();
+    if (!elements) {
+      throw new Error("当前页面不是教师批阅页。");
+    }
+    if (REVIEW_AI_STATE.running) {
+      throw new Error("AI 批阅正在进行中。");
+    }
+    if (!config.model) {
+      throw new Error("请先填写模型名。");
+    }
+
+    const authState = await fetchPluginAuthState(false, false, false);
+    renderPluginAuthState(authState);
+    if (!authState.licenseConfigured) {
+      throw new Error("请先在扩展弹窗中填写插件授权码。");
+    }
+    if (!authState.configured) {
+      throw new Error("请先填写插件网关地址。");
+    }
+
+    const cacheKey = getReviewQuestionCacheKey();
+    let questions =
+      REVIEW_AI_STATE.cachedQuestionKey === cacheKey && REVIEW_AI_STATE.cachedQuestions.length
+        ? REVIEW_AI_STATE.cachedQuestions
+        : [];
+
+    if (!questions.length) {
+      elements.progress.textContent = "正在解析当前批阅页面...";
+      await sleep(0);
+      questions = await extractQuestionRecordsAsync();
+      REVIEW_AI_STATE.cachedQuestionKey = cacheKey;
+      REVIEW_AI_STATE.cachedQuestions = questions;
+    }
+
+    if (!questions.length) {
+      throw new Error("当前页面未识别到主观题。");
+    }
+
+    const continuousMode = config.autoFill && config.autoSubmit && config.submitMode === "next";
+    if (opts.autoTriggered && !continuousMode) {
+      setAutoLoopState(false);
+      REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+      throw new Error("连续批阅需要开启自动填写、自动提交，并选择“提交并进入下一份”。");
+    }
+    if (continuousMode) {
+      setAutoLoopState(true);
+    } else if (!opts.autoTriggered) {
+      setAutoLoopState(false);
+      REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+    }
+
+    REVIEW_AI_STATE.cancelled = false;
+    REVIEW_AI_STATE.autoLoopLastStartedKey = cacheKey;
+    setReviewPanelRunning(true);
+    clearReviewTaskList();
+    elements.log.innerHTML = "";
+    setReviewPanelBadge("进行中", "running");
+    elements.progress.textContent = `正在为 ${questions.length} 道题准备 AI 批阅...`;
+    appendReviewPanelLog(`开始使用插件网关批阅，共 ${questions.length} 道题。`, "info");
+
+    try {
+      let failureCount = 0;
+      for (let index = 0; index < questions.length; index += 1) {
+        if (REVIEW_AI_STATE.cancelled) {
+          elements.progress.textContent = `已在第 ${index + 1} 题前停止。`;
+          appendReviewPanelLog("AI 批阅已停止。", "warn");
+          setReviewPanelBadge("已停止", "error");
+          return;
+        }
+
+        const question = questions[index];
+        const taskRefs = createTaskRow(question, index);
+        updateTaskRow(taskRefs, "running", "正在请求 AI...");
+        elements.progress.textContent = `正在批阅 ${index + 1}/${questions.length}...`;
+
+        try {
+          const aiResponse = await callBackgroundMessage("callAiChat", {
+            connectionMode: config.connectionMode,
+            model: config.model,
+            temperature: 0.2,
+            timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+            messages: buildAiMessages(question, config, index, questions.length),
+          });
+
+          const normalizedResult = normalizeAiReviewResult(aiResponse.content, question);
+          let fillSummary = "未自动填写";
+
+          if (config.autoFill) {
+            const fillResult = await applySingleAiResult(question, normalizedResult);
+            fillSummary = `已填写 ${Number(fillResult && fillResult.filled_count) || 0} 行`;
+          }
+
+          updateTaskRow(
+            taskRefs,
+            "success",
+            `评分：${normalizedResult.grading_score}\n评语：${normalizedResult.grading_comment}\n${fillSummary}`
+          );
+          appendReviewPanelLog(`第 ${index + 1} 题已完成。`, "success");
+        } catch (error) {
+          failureCount += 1;
+          updateTaskRow(taskRefs, "error", error.message);
+          appendReviewPanelLog(`第 ${index + 1} 题失败：${error.message}`, "error");
+        }
+      }
+
+      if (config.autoSubmit && config.autoFill && !REVIEW_AI_STATE.cancelled && failureCount === 0) {
+        const submitResult = await callBridge("submitCurrentPage", {
+          mode: config.submitMode || "current",
+        });
+        if (!(submitResult && submitResult.ok)) {
+          throw new Error((submitResult && submitResult.error) || "提交失败");
+        }
+        appendReviewPanelLog("页面提交完成。", "success");
+        if (config.submitMode === "next") {
+          elements.progress.textContent = "已提交，正在等待下一份批阅页面...";
+          setReviewPanelBadge("等待中", "running");
+        } else {
+          elements.progress.textContent = `已完成 ${questions.length} 道题。`;
+          setReviewPanelBadge("已完成", "ready");
+          setAutoLoopState(false);
+          REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+        }
+      } else {
+        if (config.autoSubmit && failureCount > 0) {
+          setAutoLoopState(false);
+          REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+        }
+        elements.progress.textContent = `已完成 ${questions.length} 道题。`;
+        setReviewPanelBadge(failureCount > 0 ? "部分完成" : "已完成", failureCount > 0 ? "error" : "ready");
+      }
+    } finally {
+      setReviewPanelRunning(false);
+      renderPluginAuthState(await fetchPluginAuthState(false, false, false).catch(() => null));
     }
   }
 
@@ -3847,11 +4933,24 @@
 
   async function handleStartAutoReviewFlow() {
     const config = await getStoredReviewSettings();
+    const authState = await fetchPluginAuthState(false, false, false);
+    renderPluginAuthState(authState);
+    if (!authState.licenseConfigured) {
+      throw new Error("请先在扩展弹窗中填写插件授权码");
+    }
+    if (!authState.configured) {
+      throw new Error("请先填写插件网关地址");
+    }
+    await callBackgroundMessage("refreshPluginGatewaySession", {
+      timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+    });
+    config.endpoint = safeText(config.endpoint) || "__plugin_gateway__";
+    config.apiKey = safeText(config.apiKey) || "__managed_gateway_session__";
     if (!safeText(config.endpoint)) {
       throw new Error("请先填写 AI 接口地址");
     }
     if (!safeText(config.apiKey)) {
-      throw new Error("请先填写 API Key");
+      throw new Error("请先填写 API 密钥");
     }
     if (!safeText(config.model)) {
       throw new Error("请先填写模型名");
@@ -3898,6 +4997,81 @@
       priority: 70,
       data: { mode: "list" },
       summary: "已在批阅列表页启动自动进入与连续批阅",
+      frameUrl: window.location.href,
+    };
+  }
+
+  async function handleStartAutoReviewFlow() {
+    const config = await getStoredReviewSettings();
+    const connectionMode = getConnectionModeValue(config.connectionMode);
+
+    if (!safeText(config.model)) {
+      throw new Error("请先填写模型名。");
+    }
+    if (!config.autoFill || !config.autoSubmit || safeText(config.submitMode) !== "next") {
+      throw new Error("请先启用自动填写、自动提交，并选择“提交并进入下一份”。");
+    }
+
+    if (connectionMode === "custom_api") {
+      if (!safeText(config.endpoint)) {
+        throw new Error("请先配置自定义 API 地址。");
+      }
+      if (!safeText(config.apiKey)) {
+        throw new Error("请先配置自定义 API 密钥。");
+      }
+    } else {
+      const authState = await fetchPluginAuthState(false, false, false);
+      renderPluginAuthState(authState);
+      if (!authState.licenseConfigured) {
+        throw new Error("请先在扩展弹窗中填写插件授权码。");
+      }
+      if (!authState.configured) {
+        throw new Error("请先填写插件网关地址。");
+      }
+      await callBackgroundMessage("refreshPluginGatewaySession", {
+        connectionMode,
+        timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+      });
+    }
+
+    setAutoLoopState(true);
+    REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+
+    if (isTeacherReviewPage()) {
+      ensureReviewPanel();
+      applyReviewSettingsToPanel(config);
+      REVIEW_AI_STATE.settingsHydrated = true;
+      window.setTimeout(() => {
+        startSequentialAiReview({ autoTriggered: true }).catch((error) => {
+          appendReviewPanelLog(`自动启动失败：${error.message}`, "error");
+          setAutoLoopState(false);
+          REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+        });
+      }, 0);
+      return {
+        ok: true,
+        handled: true,
+        count: 1,
+        priority: 90,
+        data: { mode: "detail" },
+        summary: "已在详情页启动自动批阅",
+        frameUrl: window.location.href,
+      };
+    }
+
+    window.setTimeout(() => {
+      maybeAutoEnterPendingReview().catch(() => {
+        setAutoLoopState(false);
+        REVIEW_AI_STATE.autoLoopLastStartedKey = "";
+      });
+    }, 0);
+    return {
+      ok: true,
+      handled: true,
+      count: 1,
+      priority: 70,
+      data: { mode: "list" },
+      summary: "已在列表页排队等待自动批阅",
       frameUrl: window.location.href,
     };
   }

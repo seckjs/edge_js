@@ -2,7 +2,12 @@ importScripts("review-shared.js");
 
 const {
   STORAGE_KEYS,
+  PLUGIN_GATEWAY_CONFIG,
+  buildGatewayUrl,
   ensureAiEndpointPermission,
+  ensureGatewayPermission,
+  getGatewayBaseUrl,
+  isGatewayConfigured,
   normalizeAiEndpoint,
   readReviewSettingsFromStorage,
   writeReviewSettingsToStorage,
@@ -48,7 +53,7 @@ async function sendMessageToFrame(tabId, frameId, payload) {
         resolve(result);
       });
     });
-    return response || { ok: false, handled: false, frameId, error: "Empty response" };
+    return response || { ok: false, handled: false, frameId, error: "空响应" };
   } catch (error) {
     return { ok: false, handled: false, frameId, error: error.message };
   }
@@ -139,6 +144,15 @@ async function downloadJson(filename, data) {
 function safeText(value) {
   return String(value == null ? "" : value).trim();
 }
+
+const PLUGIN_AUTH_STATE_STORAGE_KEY = STORAGE_KEYS.pluginGatewayAuthState;
+const PLUGIN_SESSION_STORAGE_KEY = STORAGE_KEYS.pluginGatewaySession;
+const AUTH_KEY_DB_NAME = "cx-plugin-auth-db";
+const AUTH_KEY_DB_VERSION = 1;
+const AUTH_KEY_STORE_NAME = "keys";
+const AUTH_KEY_PAIR_ID = "device-key-pair";
+const AUTH_REQUEST_RETRY_COUNT = 2;
+const AUTH_REQUEST_TIMEOUT_MS = 15000;
 
 const AUTO_EXTRACT_STORAGE_KEY = STORAGE_KEYS.autoExtract;
 const AUTO_CRAWL_RUNTIME_STORAGE_KEY = STORAGE_KEYS.autoCrawlRuntime;
@@ -1953,7 +1967,7 @@ function normalizeAiEndpointLegacyUnused(rawUrl) {
   return url.toString();
 }
 
-async function callAiChat(payload) {
+async function callAiChatLegacyUnused(payload) {
   const endpoint = normalizeAiEndpoint(payload && payload.endpoint);
   const permissionState = await ensureAiEndpointPermission(endpoint, { requestIfMissing: false });
   const apiKey = safeText(payload && payload.apiKey);
@@ -1965,11 +1979,11 @@ async function callAiChat(payload) {
   const retryCount = Math.max(1, Number((payload && payload.retryCount) || 2));
 
   if (!permissionState.ok) {
-    throw new Error("This AI endpoint has not been authorized yet. Please test the connection from the extension popup first.");
+    throw new Error("当前 AI 接口尚未授权，请先在扩展弹窗中测试一次连接。");
   }
 
   if (!apiKey) {
-    throw new Error("AI API Key 不能为空");
+    throw new Error("AI API 密钥不能为空");
   }
   if (!model) {
     throw new Error("AI 模型名不能为空");
@@ -2014,7 +2028,7 @@ async function callAiChat(payload) {
       },
       buildErrorMessage: (context) => {
         if (context.isAbort) {
-          return `AI request timed out after ${timeoutMs}ms`;
+          return `AI 请求超时，已等待 ${timeoutMs}ms`;
         }
         const data = parseJsonSafely(context.text);
         const apiMessage =
@@ -2023,13 +2037,13 @@ async function callAiChat(payload) {
           safeText(context.text);
         const status = Number(context.response && context.response.status);
         if (status === 401 || status === 403) {
-          return apiMessage || `AI endpoint rejected the API key (HTTP ${status})`;
+          return apiMessage || `AI 接口拒绝了当前 API 密钥（HTTP ${status}）`;
         }
         if (status === 429) {
-          return apiMessage || "AI endpoint is rate limited right now (HTTP 429)";
+          return apiMessage || "AI 接口当前触发限流（HTTP 429）";
         }
         if (status) {
-          return apiMessage || `AI endpoint returned HTTP ${status}`;
+          return apiMessage || `AI 接口返回 HTTP ${status}`;
         }
         return apiMessage || formatAttemptError(context.error);
       },
@@ -2055,8 +2069,8 @@ async function callAiChat(payload) {
   };
 }
 
-async function testAiEndpoint(payload) {
-  return callAiChat({
+async function testAiEndpointLegacyUnused(payload) {
+  return callAiChatLegacyUnused({
     endpoint: payload && payload.endpoint,
     apiKey: payload && payload.apiKey,
     model: payload && payload.model,
@@ -2076,21 +2090,21 @@ async function testAiEndpoint(payload) {
   });
 }
 
-async function getReviewSettings() {
+async function getReviewSettingsLegacyUnused() {
   return {
     ok: true,
     settings: await readReviewSettingsFromStorage(),
   };
 }
 
-async function saveReviewSettings(payload) {
+async function saveReviewSettingsLegacyUnused(payload) {
   return {
     ok: true,
     settings: await writeReviewSettingsToStorage(payload || {}),
   };
 }
 
-async function ensureCustomAiEndpointPermission(payload) {
+async function ensureCustomAiEndpointPermissionLegacyUnused(payload) {
   try {
     const result = await ensureAiEndpointPermission(payload && payload.endpoint, {
       requestIfMissing: !!(payload && payload.requestIfMissing),
@@ -2098,7 +2112,7 @@ async function ensureCustomAiEndpointPermission(payload) {
     if (!result.ok) {
       return {
         ok: false,
-        error: "The current AI endpoint has not been authorized.",
+        error: "当前 AI 接口尚未授权。",
       };
     }
     return {
@@ -2110,19 +2124,730 @@ async function ensureCustomAiEndpointPermission(payload) {
     if (/gesture/i.test(message)) {
       return {
         ok: false,
-        error: "Please open the extension popup and use Test Connection once to grant this custom AI endpoint.",
+        error: "请打开扩展弹窗，并使用一次“测试连接”来授权这个自定义 AI 接口。",
       };
     }
     return {
       ok: false,
-      error: message || "Failed to request AI endpoint permission",
+      error: message || "请求 AI 接口权限失败",
     };
   }
 }
 
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlToText(base64Url) {
+  const normalized = safeText(base64Url).replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4;
+  const padded = normalized + (padding ? "=".repeat(4 - padding) : "");
+  return atob(padded);
+}
+
+async function sha256Base64Url(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(text || "")));
+  return bytesToBase64Url(new Uint8Array(digest));
+}
+
+function createRequestNonce() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return bytesToBase64Url(bytes);
+}
+
+function buildCanonicalRequestText(method, path, timestamp, nonce, bodyHash) {
+  return [String(method || "GET").toUpperCase(), safeText(path), safeText(timestamp), safeText(nonce), safeText(bodyHash)].join("\n");
+}
+
+function openAuthKeyDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(AUTH_KEY_DB_NAME, AUTH_KEY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(AUTH_KEY_STORE_NAME)) {
+        db.createObjectStore(AUTH_KEY_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error((request.error && request.error.message) || "打开授权密钥数据库失败"));
+  });
+}
+
+async function idbGetValue(key) {
+  const db = await openAuthKeyDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction(AUTH_KEY_STORE_NAME, "readonly");
+      const request = transaction.objectStore(AUTH_KEY_STORE_NAME).get(key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(new Error((request.error && request.error.message) || "IndexedDB 读取失败"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function idbPutValue(key, value) {
+  const db = await openAuthKeyDb();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(AUTH_KEY_STORE_NAME, "readwrite");
+      const request = transaction.objectStore(AUTH_KEY_STORE_NAME).put(value, key);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(new Error((request.error && request.error.message) || "IndexedDB 写入失败"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function getOrCreateDeviceKeyPair() {
+  const existing = await idbGetValue(AUTH_KEY_PAIR_ID);
+  if (existing && existing.publicKey && existing.privateKey) {
+    return existing;
+  }
+
+  const keyPair = await crypto.subtle.generateKey(
+    {
+      name: "ECDSA",
+      namedCurve: "P-256",
+    },
+    false,
+    ["sign", "verify"]
+  );
+  await idbPutValue(AUTH_KEY_PAIR_ID, keyPair);
+  return keyPair;
+}
+
+async function exportDevicePublicKeySpki(keyPair) {
+  const spki = await crypto.subtle.exportKey("spki", keyPair.publicKey);
+  return bytesToBase64Url(new Uint8Array(spki));
+}
+
+async function signWithDeviceKey(keyPair, canonicalText) {
+  const signature = await crypto.subtle.sign(
+    {
+      name: "ECDSA",
+      hash: { name: "SHA-256" },
+    },
+    keyPair.privateKey,
+    new TextEncoder().encode(String(canonicalText || ""))
+  );
+  return bytesToBase64Url(new Uint8Array(signature));
+}
+
+async function getStoredPluginAuthState() {
+  const result = await promisifyChrome(chrome.storage.local.get, chrome.storage.local, [PLUGIN_AUTH_STATE_STORAGE_KEY]);
+  return (result && result[PLUGIN_AUTH_STATE_STORAGE_KEY]) || {};
+}
+
+async function saveStoredPluginAuthState(state) {
+  const nextState = Object.assign({}, state || {}, {
+    updatedAt: new Date().toISOString(),
+  });
+  await promisifyChrome(chrome.storage.local.set, chrome.storage.local, {
+    [PLUGIN_AUTH_STATE_STORAGE_KEY]: nextState,
+  });
+  return nextState;
+}
+
+async function clearStoredPluginAuthState() {
+  await promisifyChrome(chrome.storage.local.set, chrome.storage.local, {
+    [PLUGIN_AUTH_STATE_STORAGE_KEY]: {},
+  });
+}
+
+async function getStoredPluginSession() {
+  const result = await promisifyChrome(chrome.storage.session.get, chrome.storage.session, [PLUGIN_SESSION_STORAGE_KEY]);
+  return (result && result[PLUGIN_SESSION_STORAGE_KEY]) || null;
+}
+
+async function saveStoredPluginSession(session) {
+  const nextSession = Object.assign({}, session || {}, {
+    updatedAt: new Date().toISOString(),
+  });
+  await promisifyChrome(chrome.storage.session.set, chrome.storage.session, {
+    [PLUGIN_SESSION_STORAGE_KEY]: nextSession,
+  });
+  return nextSession;
+}
+
+async function clearStoredPluginSession() {
+  await promisifyChrome(chrome.storage.session.set, chrome.storage.session, {
+    [PLUGIN_SESSION_STORAGE_KEY]: null,
+  });
+}
+
+function parseJwtPayload(token) {
+  const text = safeText(token);
+  if (!text) {
+    return null;
+  }
+  const parts = text.split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+  try {
+    return JSON.parse(base64UrlToText(parts[1]));
+  } catch (error) {
+    return null;
+  }
+}
+
+function resolveSessionExpiryIso(token, data) {
+  const direct = safeText(data && (data.expires_at || data.expiresAt));
+  if (direct) {
+    return direct;
+  }
+  const payload = parseJwtPayload(token);
+  const exp = Number(payload && payload.exp);
+  if (Number.isFinite(exp) && exp > 0) {
+    return new Date(exp * 1000).toISOString();
+  }
+  return "";
+}
+
+function isPluginSessionUsable(session) {
+  if (!session || !safeText(session.accessToken) || !safeText(session.expiresAt)) {
+    return false;
+  }
+  const expiresAtMs = Date.parse(session.expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
+  const refreshWindowMs = Math.max(10, Number(PLUGIN_GATEWAY_CONFIG.sessionRefreshWindowSeconds) || 45) * 1000;
+  return expiresAtMs - Date.now() > refreshWindowMs;
+}
+
+function getGatewayFriendlyError(text, status, fallback) {
+  const data = parseJsonSafely(text);
+  const message =
+    safeText(data && data.error && (data.error.message || data.error.code)) ||
+    safeText(data && (data.message || data.code)) ||
+    safeText(text);
+  if (message) {
+    return message;
+  }
+  if (status === 401 || status === 403) {
+    return "插件网关拒绝了当前授权";
+  }
+  if (status === 429) {
+    return "插件网关当前触发限流";
+  }
+  if (status) {
+    return `插件网关返回 HTTP ${status}`;
+  }
+  return fallback || "插件网关请求失败";
+}
+
+function getRuntimeMetadata() {
+  const manifest = chrome.runtime.getManifest ? chrome.runtime.getManifest() : { version: "" };
+  return {
+    extensionId: safeText(chrome.runtime.id),
+    extensionVersion: safeText(manifest && manifest.version),
+    extensionName: safeText(manifest && manifest.name),
+    audience: safeText(PLUGIN_GATEWAY_CONFIG.audience),
+    channel: safeText(PLUGIN_GATEWAY_CONFIG.channel) || "edge",
+  };
+}
+
+function resolveConfiguredGatewayBaseUrl(settings) {
+  const rawGatewayBaseUrl = safeText(settings && settings.gatewayBaseUrl);
+  return getGatewayBaseUrl(rawGatewayBaseUrl);
+}
+
+function ensurePluginGatewayConfigured(settings) {
+  if (!isGatewayConfigured(safeText(settings && settings.gatewayBaseUrl))) {
+    throw new Error("使用插件授权前，请先填写插件网关地址。");
+  }
+  return resolveConfiguredGatewayBaseUrl(settings);
+}
+
+async function ensurePluginGatewayAccess(baseUrl, interactive) {
+  const permissionResult = await ensureGatewayPermission(baseUrl, {
+    requestIfMissing: !!interactive,
+  });
+  if (!permissionResult.ok) {
+    throw new Error(
+      interactive
+        ? "插件网关权限未授予。"
+        : "插件网关访问权限尚未授予，请打开扩展弹窗并先测试一次连接。"
+    );
+  }
+  return permissionResult;
+}
+
+async function buildSignedGatewayHeaders(method, path, bodyText, deviceId) {
+  const keyPair = await getOrCreateDeviceKeyPair();
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = createRequestNonce();
+  const bodyHash = await sha256Base64Url(bodyText);
+  const canonicalText = buildCanonicalRequestText(method, path, timestamp, nonce, bodyHash);
+  const signature = await signWithDeviceKey(keyPair, canonicalText);
+  const headers = {
+    "X-Timestamp": timestamp,
+    "X-Nonce": nonce,
+    "X-Body-SHA256": bodyHash,
+    "X-Signature-Version": safeText(PLUGIN_GATEWAY_CONFIG.signatureVersion) || "v1",
+    "X-Signature": signature,
+  };
+  if (safeText(deviceId)) {
+    headers["X-Device-Id"] = safeText(deviceId);
+  }
+  return headers;
+}
+
+async function gatewayFetchJson(path, options) {
+  const opts = options || {};
+  const method = String(opts.method || "POST").toUpperCase();
+  const jsonBody = Object.prototype.hasOwnProperty.call(opts, "jsonBody") ? opts.jsonBody : null;
+  const bodyText = jsonBody == null ? "" : JSON.stringify(jsonBody);
+  const baseUrl = safeText(opts.baseUrl);
+  const headers = Object.assign({}, opts.headers || {}, await buildSignedGatewayHeaders(method, path, bodyText, opts.deviceId));
+  if (bodyText) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const response = await fetchTextWithRetry(
+    buildGatewayUrl(path, baseUrl),
+    {
+      method,
+      headers,
+      body: bodyText || undefined,
+    },
+    {
+      timeoutMs: Math.max(5000, Number(opts.timeoutMs) || AUTH_REQUEST_TIMEOUT_MS),
+      retryCount: Math.max(1, Number(opts.retryCount) || AUTH_REQUEST_RETRY_COUNT),
+      shouldRetry: (context) => {
+        if (context.isAbort || context.isNetworkError) {
+          return true;
+        }
+        const status = Number(context.response && context.response.status);
+        return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+      },
+      buildErrorMessage: (context) => {
+        if (context.isAbort) {
+          return `插件网关请求超时，已等待 ${Math.max(5000, Number(opts.timeoutMs) || AUTH_REQUEST_TIMEOUT_MS)}ms`;
+        }
+        const status = Number(context.response && context.response.status);
+        return getGatewayFriendlyError(context.text, status, formatAttemptError(context.error));
+      },
+    }
+  );
+
+  return {
+    text: response.text,
+    data: parseJsonSafely(response.text),
+    status: response.status,
+    url: response.url,
+  };
+}
+
+async function computeLicenseHash(licenseKey) {
+  return sha256Base64Url(safeText(licenseKey));
+}
+
+async function registerPluginGatewayDevice(options) {
+  const opts = options || {};
+  const settings = opts.settings || (await readReviewSettingsFromStorage());
+  const licenseKey = safeText(settings.licenseKey);
+  const gatewayBaseUrl = ensurePluginGatewayConfigured(settings);
+  if (!licenseKey) {
+    throw new Error("请先在扩展弹窗中填写插件授权码。");
+  }
+
+  await ensurePluginGatewayAccess(gatewayBaseUrl, !!opts.interactive);
+  const runtime = getRuntimeMetadata();
+  const keyPair = await getOrCreateDeviceKeyPair();
+  const publicKeySpki = await exportDevicePublicKeySpki(keyPair);
+  const licenseHash = await computeLicenseHash(licenseKey);
+  const currentState = opts.authState || (await getStoredPluginAuthState());
+
+  if (
+    !opts.force &&
+    safeText(currentState.deviceId) &&
+    safeText(currentState.licenseHash) === licenseHash &&
+    safeText(currentState.gatewayBaseUrl) === gatewayBaseUrl
+  ) {
+    return currentState;
+  }
+
+  const response = await gatewayFetchJson(PLUGIN_GATEWAY_CONFIG.registerPath, {
+    method: "POST",
+    baseUrl: gatewayBaseUrl,
+    headers: {
+      Authorization: `License ${licenseKey}`,
+    },
+    jsonBody: {
+      public_key: publicKeySpki,
+      extension_id: runtime.extensionId,
+      extension_version: runtime.extensionVersion,
+      extension_name: runtime.extensionName,
+      audience: runtime.audience,
+      channel: runtime.channel,
+    },
+  });
+
+  const data = response.data || {};
+  const deviceId = safeText(data.device_id || data.deviceId);
+  if (!deviceId) {
+    throw new Error("插件网关在注册时没有返回 device_id。");
+  }
+
+  return saveStoredPluginAuthState({
+    deviceId,
+    registeredAt: safeText(data.registered_at || data.registeredAt) || new Date().toISOString(),
+    publicKeySpki,
+    licenseHash,
+    gatewayBaseUrl,
+    lastError: "",
+    lastValidatedAt: new Date().toISOString(),
+  });
+}
+
+async function requestPluginGatewaySession(options) {
+  const opts = options || {};
+  const settings = opts.settings || (await readReviewSettingsFromStorage());
+  const licenseKey = safeText(settings.licenseKey);
+  const gatewayBaseUrl = ensurePluginGatewayConfigured(settings);
+  if (!licenseKey) {
+    throw new Error("请先在扩展弹窗中填写插件授权码。");
+  }
+
+  await ensurePluginGatewayAccess(gatewayBaseUrl, !!opts.interactive);
+  const authState =
+    opts.authState ||
+    (await registerPluginGatewayDevice({
+      interactive: !!opts.interactive,
+      settings,
+      force: !!opts.forceRegister,
+    }));
+  const runtime = getRuntimeMetadata();
+  const response = await gatewayFetchJson(PLUGIN_GATEWAY_CONFIG.sessionPath, {
+    method: "POST",
+    baseUrl: gatewayBaseUrl,
+    deviceId: authState.deviceId,
+    headers: {
+      Authorization: `License ${licenseKey}`,
+    },
+    jsonBody: {
+      device_id: authState.deviceId,
+      extension_id: runtime.extensionId,
+      extension_version: runtime.extensionVersion,
+      audience: runtime.audience,
+      channel: runtime.channel,
+    },
+    timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
+  });
+
+  const data = response.data || {};
+  const accessToken = safeText(data.access_token || data.accessToken || data.token);
+  if (!accessToken) {
+    throw new Error("插件网关没有返回访问令牌。");
+  }
+
+  const session = await saveStoredPluginSession({
+    accessToken,
+    deviceId: authState.deviceId,
+    issuedAt: new Date().toISOString(),
+    expiresAt: resolveSessionExpiryIso(accessToken, data),
+    sessionId: safeText(data.session_id || data.sessionId),
+    userId: safeText(data.user_id || data.userId),
+  });
+
+  await saveStoredPluginAuthState(
+    Object.assign({}, authState, {
+      lastError: "",
+      lastValidatedAt: new Date().toISOString(),
+    })
+  );
+
+  return {
+    authState,
+    session,
+    data,
+  };
+}
+
+async function ensurePluginGatewaySession(options) {
+  const opts = options || {};
+  const settings = opts.settings || (await readReviewSettingsFromStorage());
+  const gatewayBaseUrl = ensurePluginGatewayConfigured(settings);
+  if (!safeText(settings.licenseKey)) {
+    throw new Error("请先在扩展弹窗中填写插件授权码。");
+  }
+
+  await ensurePluginGatewayAccess(gatewayBaseUrl, !!opts.interactive);
+  let authState = await getStoredPluginAuthState();
+  const licenseHash = await computeLicenseHash(settings.licenseKey);
+  if (
+    !safeText(authState.deviceId) ||
+    safeText(authState.licenseHash) !== licenseHash ||
+    safeText(authState.gatewayBaseUrl) !== gatewayBaseUrl ||
+    !!opts.forceRegister
+  ) {
+    authState = await registerPluginGatewayDevice({
+      interactive: !!opts.interactive,
+      settings,
+      authState,
+      force: true,
+    });
+  }
+
+  let session = await getStoredPluginSession();
+  if (
+    !opts.forceRefresh &&
+    session &&
+    safeText(session.deviceId) === safeText(authState.deviceId) &&
+    isPluginSessionUsable(session)
+  ) {
+    return {
+      settings,
+      authState,
+      session,
+      gatewayBaseUrl,
+    };
+  }
+
+  const refreshed = await requestPluginGatewaySession({
+    interactive: !!opts.interactive,
+    settings,
+    authState,
+  });
+
+  return {
+    settings,
+    authState: refreshed.authState,
+    session: refreshed.session,
+    gatewayBaseUrl,
+  };
+}
+
+async function getPluginAuthState(options) {
+  const opts = options || {};
+  const settings = await readReviewSettingsFromStorage();
+  let authState = await getStoredPluginAuthState();
+  let session = await getStoredPluginSession();
+  let lastError = safeText(authState && authState.lastError);
+
+  if (opts.refresh) {
+    try {
+      const ensured = await ensurePluginGatewaySession({
+        interactive: !!opts.interactive,
+        forceRefresh: !!opts.forceRefresh,
+      });
+      authState = ensured.authState;
+      session = ensured.session;
+      lastError = "";
+    } catch (error) {
+      lastError = safeText(error && error.message);
+      authState = await saveStoredPluginAuthState(
+        Object.assign({}, authState || {}, {
+          lastError,
+        })
+      );
+    }
+  }
+
+  return {
+    ok: true,
+    state: {
+      configured: isGatewayConfigured(safeText(settings && settings.gatewayBaseUrl)),
+      gatewayBaseUrl:
+        safeText(settings && settings.gatewayBaseUrl) ||
+        (isGatewayConfigured("") ? getGatewayBaseUrl("") : ""),
+      extensionId: safeText(chrome.runtime.id),
+      licenseConfigured: !!safeText(settings.licenseKey),
+      registered: !!safeText(authState && authState.deviceId),
+      deviceId: safeText(authState && authState.deviceId),
+      lastValidatedAt: safeText(authState && authState.lastValidatedAt),
+      sessionActive: !!(session && isPluginSessionUsable(session)),
+      sessionExpiresAt: safeText(session && session.expiresAt),
+      lastError,
+    },
+  };
+}
+
+async function testPluginGatewayConnection(payload) {
+  const settings = await readReviewSettingsFromStorage();
+  if (!safeText(settings.licenseKey)) {
+    throw new Error("请先在扩展弹窗中填写插件授权码。");
+  }
+
+  const ensured = await ensurePluginGatewaySession({
+    interactive: true,
+    forceRefresh: true,
+  });
+
+  let healthMessage = "插件网关授权已就绪。";
+  if (safeText(PLUGIN_GATEWAY_CONFIG.healthPath)) {
+    try {
+      const health = await gatewayFetchJson(PLUGIN_GATEWAY_CONFIG.healthPath, {
+        method: "GET",
+        deviceId: ensured.authState.deviceId,
+        headers: {
+          Authorization: `Bearer ${ensured.session.accessToken}`,
+        },
+        timeoutMs: Math.max(5000, Number(payload && payload.timeoutMs) || 8000),
+        retryCount: 1,
+      });
+      const data = health.data || {};
+      healthMessage =
+        safeText(data.message || data.status) ||
+        (health.status ? `插件网关健康检查返回 HTTP ${health.status}` : healthMessage);
+    } catch (error) {
+      if (!/404/.test(safeText(error && error.message))) {
+        throw error;
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    gatewayBaseUrl: ensured.gatewayBaseUrl,
+    deviceId: ensured.authState.deviceId,
+    sessionExpiresAt: ensured.session.expiresAt,
+    message: healthMessage,
+  };
+}
+
+function getConnectionModeFromPayload(payload, settings) {
+  const rawMode = safeText(payload && payload.connectionMode) || safeText(settings && settings.connectionMode);
+  return rawMode === "custom_api" ? "custom_api" : "plugin_gateway";
+}
+
+async function callAiChat(payload) {
+  const settings = await readReviewSettingsFromStorage();
+  const connectionMode = getConnectionModeFromPayload(payload, settings);
+  if (connectionMode === "custom_api") {
+    return callAiChatLegacyUnused(Object.assign({}, settings || {}, payload || {}, { connectionMode }));
+  }
+
+  const model = safeText(payload && payload.model);
+  const messages = Array.isArray(payload && payload.messages) ? payload.messages : [];
+  const temperature = payload && typeof payload.temperature === "number" ? payload.temperature : null;
+  const timeoutMs = Math.max(5000, Number((payload && payload.timeoutMs) || 20000));
+  const retryCount = Math.max(1, Number((payload && payload.retryCount) || 2));
+
+  if (!model) {
+    throw new Error("AI 模型不能为空");
+  }
+  if (!messages.length) {
+    throw new Error("AI 请求消息不能为空");
+  }
+
+  const requestBody = Object.assign(
+    {
+      model,
+      messages,
+      client: {
+        extension_id: chrome.runtime.id,
+        extension_version: safeText(chrome.runtime.getManifest && chrome.runtime.getManifest().version),
+        channel: safeText(PLUGIN_GATEWAY_CONFIG.channel) || "edge",
+      },
+    },
+    typeof payload.max_tokens === "number" ? { max_tokens: payload.max_tokens } : {},
+    typeof temperature === "number" ? { temperature } : {}
+  );
+
+  let ensured = await ensurePluginGatewaySession({
+    interactive: false,
+  });
+
+  async function doRequest(sessionInfo) {
+    return gatewayFetchJson(PLUGIN_GATEWAY_CONFIG.chatPath, {
+      method: "POST",
+      baseUrl: sessionInfo.gatewayBaseUrl,
+      deviceId: sessionInfo.authState.deviceId,
+      headers: {
+        Authorization: `Bearer ${sessionInfo.session.accessToken}`,
+      },
+      jsonBody: requestBody,
+      timeoutMs,
+      retryCount,
+    });
+  }
+
+  let result;
+  try {
+    result = await doRequest(ensured);
+  } catch (error) {
+    const message = safeText(error && error.message).toLowerCase();
+    if (message.includes("http 401") || message.includes("http 403") || message.includes("authorization")) {
+      await clearStoredPluginSession();
+      ensured = await ensurePluginGatewaySession({
+        interactive: false,
+        forceRefresh: true,
+      });
+      result = await doRequest(ensured);
+    } else {
+      throw error;
+    }
+  }
+
+  const rawText = result.text;
+  const data = result.data || parseJsonSafely(rawText);
+  const choice = data && Array.isArray(data.choices) ? data.choices[0] : null;
+  const content =
+    safeText(choice && choice.message && choice.message.content) ||
+    safeText(data && data.output_text) ||
+    "";
+
+  return {
+    ok: true,
+    endpoint: buildGatewayUrl(PLUGIN_GATEWAY_CONFIG.chatPath, ensured.gatewayBaseUrl),
+    model,
+    content,
+    rawText,
+    usage: data && data.usage ? data.usage : null,
+    deviceId: ensured.authState.deviceId,
+    sessionExpiresAt: ensured.session.expiresAt,
+  };
+}
+
+async function testAiEndpoint(payload) {
+  const settings = await readReviewSettingsFromStorage();
+  const connectionMode = getConnectionModeFromPayload(payload, settings);
+  if (connectionMode === "custom_api") {
+    return testAiEndpointLegacyUnused(Object.assign({}, settings || {}, payload || {}, { connectionMode }));
+  }
+  return testPluginGatewayConnection(payload);
+}
+
+async function getReviewSettings() {
+  return {
+    ok: true,
+    settings: await readReviewSettingsFromStorage(),
+  };
+}
+
+async function saveReviewSettings(payload) {
+  const previous = await readReviewSettingsFromStorage();
+  const settings = await writeReviewSettingsToStorage(payload || {});
+  if (
+    safeText(previous.licenseKey) !== safeText(settings.licenseKey) ||
+    safeText(previous.connectionMode) !== safeText(settings.connectionMode) ||
+    safeText(previous.gatewayBaseUrl) !== safeText(settings.gatewayBaseUrl)
+  ) {
+    await clearStoredPluginSession();
+    await clearStoredPluginAuthState();
+  }
+  return {
+    ok: true,
+    settings,
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") {
-    sendResponse({ ok: false, error: "Invalid message" });
+    sendResponse({ ok: false, error: "无效消息" });
     return false;
   }
 
@@ -2154,6 +2879,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "getPluginAuthState") {
+    getPluginAuthState(message.payload || {})
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "ensureAiEndpointPermission") {
+    ensureCustomAiEndpointPermissionLegacyUnused(message.payload || {})
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message.type === "getReviewSettings") {
     getReviewSettings()
       .then(sendResponse)
@@ -2168,8 +2907,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "ensureAiEndpointPermission") {
-    ensureCustomAiEndpointPermission(message.payload || {})
+  if (message.type === "refreshPluginGatewaySession") {
+    testPluginGatewayConnection(message.payload || {})
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

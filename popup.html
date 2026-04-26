@@ -57,32 +57,60 @@
         </div>
 
         <label class="field-block">
-          <span class="field-label">常用 API 地址</span>
+          <span class="field-label">连接模式</span>
           <div class="inline-row">
-            <select id="providerSelect" class="text-input select-input"></select>
-            <button id="testApiBtn" class="secondary-btn" type="button">测试连接</button>
+            <select id="connectionModeSelect" class="text-input select-input">
+              <option value="plugin_gateway">插件网关</option>
+              <option value="custom_api">自定义 API</option>
+            </select>
+            <button id="testApiBtn" class="secondary-btn" type="button">校验授权</button>
           </div>
         </label>
 
         <div id="testStatus" class="test-status" data-tone="neutral">尚未测试连接</div>
+        <div id="authStatusMeta" class="meta-text">请按当前连接模式填写配置。</div>
+
+        <div id="gatewaySettingsSection">
+          <label class="field-block">
+            <span class="field-label">插件网关地址</span>
+            <input id="gatewayBaseUrlInput" class="text-input" type="text" placeholder="https://api.example.com">
+          </label>
+
+          <label class="field-block">
+            <span class="field-label">插件授权码</span>
+            <input id="licenseKeyInput" class="text-input" type="password" placeholder="请输入你签发给插件的授权码">
+          </label>
+
+          <label class="option-row">
+            <input id="rememberLicenseInput" type="checkbox">
+            <span>记住授权码到本地存储</span>
+          </label>
+        </div>
+
+        <div id="customApiSettingsSection" hidden>
+          <label class="field-block">
+            <span class="field-label">API 提供方</span>
+            <select id="providerSelect" class="text-input select-input"></select>
+          </label>
+
+          <label class="field-block">
+            <span class="field-label">API 地址</span>
+            <input id="endpointInput" class="text-input" type="text" placeholder="https://api.example.com/v1">
+          </label>
+
+          <label class="field-block">
+            <span class="field-label">API 密钥</span>
+            <input id="apiKeyInput" class="text-input" type="password" placeholder="请输入当前自定义接口的 API 密钥">
+          </label>
+
+          <label class="option-row">
+            <input id="rememberApiKeyInput" type="checkbox">
+            <span>记住 API 密钥到本地存储</span>
+          </label>
+        </div>
 
         <label class="field-block">
-          <span class="field-label">AI 接口地址（OpenAI 兼容）</span>
-          <input id="endpointInput" class="text-input" type="text" placeholder="https://api.moonshot.cn/v1">
-        </label>
-
-        <label class="field-block">
-          <span class="field-label">API Key</span>
-          <input id="apiKeyInput" class="text-input" type="password" placeholder="请输入当前会话使用的 API Key">
-        </label>
-
-        <label class="option-row">
-          <input id="rememberApiKeyInput" type="checkbox">
-          <span>记住 API Key 到本地存储</span>
-        </label>
-
-        <label class="field-block">
-          <span class="field-label">常用模型</span>
+          <span class="field-label">默认模型</span>
           <select id="modelSelect" class="text-input select-input"></select>
         </label>
 

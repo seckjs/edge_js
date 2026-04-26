@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Chaoxing Edge Assistant",
-  "description": "在 Edge 中抓取超星课程/作业/提交/题目，并支持批改结果回填。",
-  "version": "1.0.0",
+  "description": "在 Edge 中识别超星课程、作业、提交和题目，并提供主观题辅助批改能力。",
+  "version": "1.1.0",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -21,19 +21,12 @@
     "https://*.chaoxing.com/*",
     "http://*.chaoxing.com/*",
     "https://*.chaoxing.com.cn/*",
-    "http://*.chaoxing.com.cn/*",
-    "https://api.moonshot.cn/*",
-    "https://api.deepseek.com/*",
-    "https://api.openai.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://open.bigmodel.cn/*",
-    "https://api.minimaxi.com/*",
-    "https://operator.las.cn-beijing.volces.com/*",
-    "https://dashscope.aliyuncs.com/*"
+    "http://*.chaoxing.com.cn/*"
   ],
   "optional_host_permissions": [
     "https://*/*",
-    "http://*/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "background.js"

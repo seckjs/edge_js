@@ -2,15 +2,20 @@ const REVIEW_SHARED = globalThis.CX_REVIEW_SHARED;
 const AUTO_EXTRACT_STORAGE_KEY = REVIEW_SHARED.STORAGE_KEYS.autoExtract;
 const REVIEW_SETTINGS_STORAGE_KEY = REVIEW_SHARED.STORAGE_KEYS.reviewSettings;
 const REVIEW_BATCH_QUEUE_STORAGE_KEY = REVIEW_SHARED.STORAGE_KEYS.reviewBatchQueue;
+const PLUGIN_GATEWAY_CONFIG = REVIEW_SHARED.PLUGIN_GATEWAY_CONFIG;
 const getSharedDefaultReviewSettings = REVIEW_SHARED.getDefaultReviewSettings;
+const getSharedGatewayBaseUrl = REVIEW_SHARED.getGatewayBaseUrl;
+const getSharedModelOptions = REVIEW_SHARED.getModelOptions;
 const getSharedProviderPreset = REVIEW_SHARED.getProviderPreset;
+const getSharedProviderPresets = REVIEW_SHARED.getProviderPresets;
 const getSharedProviderModels = REVIEW_SHARED.getProviderModels;
 const inferSharedProviderFromEndpoint = REVIEW_SHARED.inferProviderFromEndpoint;
+const isSharedCustomApiMode = REVIEW_SHARED.isCustomApiMode;
+const isSharedGatewayConfigured = REVIEW_SHARED.isGatewayConfigured;
 const readSharedReviewSettings = REVIEW_SHARED.readReviewSettingsFromStorage;
 const writeSharedReviewSettings = REVIEW_SHARED.writeReviewSettingsToStorage;
-const ensureSharedAiEndpointPermission = REVIEW_SHARED.ensureAiEndpointPermission;
 
-const API_PROVIDER_PRESETS = REVIEW_SHARED.API_PROVIDER_PRESETS;
+const API_PROVIDER_PRESETS = getSharedProviderPresets();
 const LEGACY_API_PROVIDER_PRESETS = [
   {
     id: "moonshot",
@@ -58,6 +63,7 @@ const logSummaryCardsEl = document.getElementById("logSummaryCards");
 const courseProgressInfoEl = document.getElementById("courseProgressInfo");
 const logCourseMetaEl = document.getElementById("logCourseMeta");
 const testStatusEl = document.getElementById("testStatus");
+const authStatusMetaEl = document.getElementById("authStatusMeta");
 
 const viewEls = {
   home: document.getElementById("homeView"),
@@ -68,6 +74,12 @@ const viewEls = {
 const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
 
 const settingsEls = {
+  connectionMode: document.getElementById("connectionModeSelect"),
+  gatewaySection: document.getElementById("gatewaySettingsSection"),
+  customApiSection: document.getElementById("customApiSettingsSection"),
+  gatewayBaseUrl: document.getElementById("gatewayBaseUrlInput"),
+  licenseKey: document.getElementById("licenseKeyInput"),
+  rememberLicense: document.getElementById("rememberLicenseInput"),
   provider: document.getElementById("providerSelect"),
   endpoint: document.getElementById("endpointInput"),
   apiKey: document.getElementById("apiKeyInput"),
@@ -79,7 +91,7 @@ const settingsEls = {
   autoFill: document.getElementById("autoFillInput"),
   autoSubmit: document.getElementById("autoSubmitInput"),
   submitMode: document.getElementById("submitModeSelect"),
-  testApiBtn: document.getElementById("testApiBtn"),
+  testGatewayBtn: document.getElementById("testApiBtn"),
 };
 
 function setStatus(message) {
@@ -103,12 +115,139 @@ function getDefaultReviewSettings() {
   return getSharedDefaultReviewSettings();
 }
 
+function getConnectionModeValue(value) {
+  return isSharedCustomApiMode(value) ? "custom_api" : "plugin_gateway";
+}
+
+function isGatewayModeSelected(value) {
+  return getConnectionModeValue(value) !== "custom_api";
+}
+
 function getProviderPreset(providerId) {
   return getSharedProviderPreset(providerId);
 }
 
+function getProviderModels(providerId) {
+  return getSharedProviderModels(providerId);
+}
+
 function inferProviderFromEndpoint(endpoint) {
   return inferSharedProviderFromEndpoint(endpoint);
+}
+
+function getGatewayBaseUrlText() {
+  const configuredValue = safeText(settingsEls.gatewayBaseUrl && settingsEls.gatewayBaseUrl.value);
+  if (configuredValue) {
+    return configuredValue;
+  }
+  if (!isSharedGatewayConfigured("")) {
+    return "";
+  }
+  try {
+    return getSharedGatewayBaseUrl(configuredValue);
+  } catch (error) {
+    return configuredValue || safeText(PLUGIN_GATEWAY_CONFIG.gatewayBaseUrl);
+  }
+}
+
+async function fetchPluginAuthState(refresh, interactive, forceRefresh) {
+  const response = await chrome.runtime.sendMessage({
+    type: "getPluginAuthState",
+    payload: {
+      refresh: !!refresh,
+      interactive: !!interactive,
+      forceRefresh: !!forceRefresh,
+    },
+  });
+  if (!response || response.ok === false) {
+    throw new Error((response && response.error) || "读取插件授权状态失败");
+  }
+  return response.state || {};
+}
+
+function populateProviderOptions() {
+  if (!settingsEls.provider) {
+    return;
+  }
+  settingsEls.provider.innerHTML = API_PROVIDER_PRESETS.map((item) => {
+    return `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`;
+  }).join("");
+}
+
+function formatAuthSummary(state) {
+  if (!state || !state.configured) {
+    return "请先填写插件网关地址。";
+  }
+  if (!state.licenseConfigured) {
+    return "尚未填写插件授权码。";
+  }
+  if (state.sessionActive) {
+    return `授权已生效${state.sessionExpiresAt ? `，会话到期：${new Date(state.sessionExpiresAt).toLocaleString("zh-CN")}` : ""}`;
+  }
+  if (state.registered) {
+    return "设备已注册，但当前会话尚未激活。";
+  }
+  return state.lastError || "尚未完成设备注册。";
+}
+
+function renderPluginAuthState(state) {
+  setTestStatus(formatAuthSummary(state), state && state.sessionActive ? "success" : state && state.lastError ? "error" : "neutral");
+  if (!authStatusMetaEl) {
+    return;
+  }
+  const deviceText = state && state.deviceId ? `设备 ID：${state.deviceId}` : "设备尚未注册";
+  const gatewayText = `网关：${escapeHtml(safeText(state && state.gatewayBaseUrl) || getGatewayBaseUrlText())}`;
+  authStatusMetaEl.innerHTML = `${gatewayText}<br>${escapeHtml(deviceText)}`;
+}
+
+function renderCustomApiState(state) {
+  const providerText = safeText((state && state.provider) || (settingsEls.provider && settingsEls.provider.value) || "custom");
+  const endpointText = safeText((state && state.endpoint) || (settingsEls.endpoint && settingsEls.endpoint.value));
+  setTestStatus(
+    safeText(state && state.message) || (endpointText ? "自定义 API 模式已可测试。" : "请先配置自定义 API 地址。"),
+    state && state.ok ? "success" : "neutral"
+  );
+  if (!authStatusMetaEl) {
+    return;
+  }
+  authStatusMetaEl.innerHTML = `提供方：${escapeHtml(providerText)}<br>接口地址：${escapeHtml(endpointText || "未配置")}`;
+}
+
+function syncConnectionModeUi(mode, options) {
+  const resolvedMode = getConnectionModeValue(mode || (settingsEls.connectionMode && settingsEls.connectionMode.value));
+  const gatewayMode = isGatewayModeSelected(resolvedMode);
+  if (settingsEls.connectionMode) {
+    settingsEls.connectionMode.value = resolvedMode;
+  }
+  if (settingsEls.gatewaySection) {
+    settingsEls.gatewaySection.hidden = !gatewayMode;
+  }
+  if (settingsEls.customApiSection) {
+    settingsEls.customApiSection.hidden = gatewayMode;
+  }
+  if (settingsEls.testGatewayBtn) {
+    settingsEls.testGatewayBtn.textContent = gatewayMode ? "校验授权" : "测试连接";
+  }
+  if (options && options.state) {
+    if (gatewayMode) {
+      renderPluginAuthState(options.state);
+    } else {
+      renderCustomApiState(options.state);
+    }
+    return;
+  }
+  if (!gatewayMode) {
+    renderCustomApiState({
+      provider: safeText(settingsEls.provider && settingsEls.provider.value) || inferProviderFromEndpoint(settingsEls.endpoint && settingsEls.endpoint.value),
+      endpoint: safeText(settingsEls.endpoint && settingsEls.endpoint.value),
+      message: "自定义 API 模式会使用你自己的接口地址和 API 密钥。",
+    });
+  } else {
+    setTestStatus("准备好后请校验插件网关授权。", "neutral");
+    if (authStatusMetaEl) {
+      authStatusMetaEl.textContent = "当前模式使用固定插件网关和短期会话。";
+    }
+  }
 }
 
 function getCourseProgressKey(item) {
@@ -458,7 +597,7 @@ async function refreshAutoData() {
   renderLogs(data);
 }
 
-async function handleBatchReview() {
+async function handleBatchReviewLegacyUnused() {
   const urls = Array.from(selectedPendingUrls).filter(Boolean);
   if (!urls.length) {
     setStatus("请先选择要批阅的作业");
@@ -467,7 +606,7 @@ async function handleBatchReview() {
   await flushPendingSettingsSave();
   const config = await readSharedReviewSettings();
   if (!safeText(config.apiKey)) {
-    setStatus("请先在设置里填写 API Key");
+    setStatus("请先在设置里填写 API 密钥");
     setView("settings");
     return;
   }
@@ -523,10 +662,10 @@ function populateProviderOptions() {
   }).join("");
 }
 
-function populateModelOptions(providerId, preferredModel) {
+function populateModelOptionsLegacyUnused(providerId, preferredModel) {
   const nextPreset = getProviderPreset(providerId);
   const nextModels = getSharedProviderModels(providerId);
-  const nextOptions = [...nextModels, { value: "__custom__", label: "Custom model" }];
+  const nextOptions = [...nextModels, { value: "__custom__", label: "自定义模型" }];
   settingsEls.modelSelect.innerHTML = nextOptions
     .map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`)
     .join("");
@@ -542,7 +681,7 @@ function populateModelOptions(providerId, preferredModel) {
 
   const preset = getProviderPreset(providerId);
   const models = getSharedProviderModels(providerId);
-  const options = [...models, { value: "__custom__", label: "Custom model" }];
+  const options = [...models, { value: "__custom__", label: "自定义模型" }];
   settingsEls.modelSelect.innerHTML = options
     .map((value) => {
       const label = value === "__custom__" ? "自定义模型" : value;
@@ -559,7 +698,7 @@ function populateModelOptions(providerId, preferredModel) {
   }
 }
 
-function getSettingsPayload() {
+function getSettingsPayloadLegacyUnused() {
   const selectedModel = safeText(settingsEls.modelSelect.value);
   const typedModel = safeText(settingsEls.model.value);
   return {
@@ -567,6 +706,247 @@ function getSettingsPayload() {
     endpoint: safeText(settingsEls.endpoint.value),
     apiKey: safeText(settingsEls.apiKey.value),
     rememberApiKey: !!settingsEls.rememberApiKey.checked,
+    model: selectedModel && selectedModel !== "__custom__" ? selectedModel : typedModel,
+    timeoutSeconds: Number(settingsEls.timeout.value),
+    extraPrompt: safeText(settingsEls.extraPrompt.value),
+    autoFill: !!settingsEls.autoFill.checked,
+    autoSubmit: !!settingsEls.autoSubmit.checked,
+    submitMode: safeText(settingsEls.submitMode.value) || "current",
+  };
+}
+
+async function saveSettingsLegacyUnused() {
+  if (settingsHydrating) {
+    return;
+  }
+  const payload = getSettingsPayload();
+  await writeSharedReviewSettings(payload);
+  setStatus("设置已保存");
+}
+
+function syncSubmitModeDisabledLegacyUnused() {
+  settingsEls.submitMode.disabled = !settingsEls.autoSubmit.checked;
+}
+
+function scheduleSaveSettingsLegacyUnused() {
+  if (settingsHydrating) {
+    return;
+  }
+  if (settingsPersistTimer) {
+    window.clearTimeout(settingsPersistTimer);
+  }
+  settingsPersistTimer = window.setTimeout(() => {
+    settingsPersistTimer = null;
+    saveSettings().catch((error) => {
+      setStatus(`保存设置失败：${error.message}`);
+    });
+  }, 250);
+}
+
+async function flushPendingSettingsSaveLegacyUnused() {
+  if (!settingsPersistTimer) {
+    return;
+  }
+  window.clearTimeout(settingsPersistTimer);
+  settingsPersistTimer = null;
+  await saveSettings();
+}
+
+async function hydrateSettingsLegacyUnused() {
+  settingsHydrating = true;
+  populateProviderOptions();
+
+  const merged = await readSharedReviewSettings();
+  const providerValue = safeText(merged.provider) || inferProviderFromEndpoint(merged.endpoint) || "moonshot";
+
+  settingsEls.provider.value = providerValue;
+  settingsEls.endpoint.value = safeText(merged.endpoint);
+  settingsEls.apiKey.value = safeText(merged.apiKey);
+  settingsEls.rememberApiKey.checked = !!merged.rememberApiKey;
+  populateModelOptions(providerValue, safeText(merged.model));
+  settingsEls.timeout.value = String(Number(merged.timeoutSeconds) || 20);
+  settingsEls.extraPrompt.value = safeText(merged.extraPrompt);
+  settingsEls.autoFill.checked = !!merged.autoFill;
+  settingsEls.autoSubmit.checked = !!merged.autoSubmit;
+  settingsEls.submitMode.value = safeText(merged.submitMode) || "current";
+  syncSubmitModeDisabled();
+  setTestStatus("尚未测试连接", "neutral");
+  settingsHydrating = false;
+}
+
+async function testCurrentSettingsLegacyUnused() {
+  const payload = getSettingsPayload();
+  if (!payload.endpoint) {
+    setTestStatus("请先填写 AI 接口地址", "error");
+    return;
+  }
+  if (!payload.apiKey) {
+    setTestStatus("请先填写 API 密钥", "error");
+    return;
+  }
+  if (!payload.model) {
+    setTestStatus("请先填写模型名", "error");
+    return;
+  }
+
+  settingsEls.testApiBtn.disabled = true;
+  setTestStatus("正在测试连接...", "neutral");
+  try {
+    const permissionResult = await ensureSharedAiEndpointPermission(payload.endpoint, { requestIfMissing: true });
+    if (!permissionResult.ok) {
+      throw new Error("未获得当前 AI 地址的访问权限");
+    }
+    const response = await chrome.runtime.sendMessage({
+      type: "testAiEndpoint",
+      payload: Object.assign({}, payload, {
+        timeoutMs: Math.max(5000, Math.round((Number(payload.timeoutSeconds) || 20) * 1000)),
+      }),
+    });
+    if (!response || response.ok === false) {
+      throw new Error((response && response.error) || "测试失败");
+    }
+    setTestStatus(`连接成功：${payload.model}`, "success");
+    setStatus("AI 接口连接正常");
+  } catch (error) {
+    setTestStatus(`测试失败：${error.message}`, "error");
+    setStatus(`AI 接口测试失败：${error.message}`);
+  } finally {
+    settingsEls.testApiBtn.disabled = false;
+  }
+}
+
+function bindSettingsEventsLegacyUnused() {
+  settingsEls.provider.addEventListener("change", async () => {
+    const preset = getProviderPreset(settingsEls.provider.value);
+    settingsEls.endpoint.value = preset.endpoint || settingsEls.endpoint.value;
+    populateModelOptions(preset.id, preset.model);
+    setTestStatus("已切换预设，请重新测试连接。", "neutral");
+    scheduleSaveSettings();
+  });
+
+  settingsEls.modelSelect.addEventListener("change", async () => {
+    if (settingsEls.modelSelect.value !== "__custom__") {
+      settingsEls.model.value = settingsEls.modelSelect.value;
+    } else {
+      settingsEls.model.value = "";
+    }
+    setTestStatus("模型已切换，请重新测试连接。", "neutral");
+    scheduleSaveSettings();
+  });
+
+  [settingsEls.endpoint, settingsEls.apiKey, settingsEls.model, settingsEls.timeout, settingsEls.extraPrompt].forEach((node) => {
+    node.addEventListener("input", async () => {
+      if (node === settingsEls.endpoint) {
+        const nextProvider = inferProviderFromEndpoint(settingsEls.endpoint.value);
+        if (nextProvider !== settingsEls.provider.value) {
+          settingsEls.provider.value = nextProvider;
+          populateModelOptions(nextProvider, settingsEls.model.value);
+        }
+      }
+      setTestStatus("配置已修改，请重新测试连接。", "neutral");
+      scheduleSaveSettings();
+    });
+  });
+
+  [settingsEls.rememberApiKey, settingsEls.autoFill, settingsEls.autoSubmit, settingsEls.submitMode].forEach((node) => {
+    node.addEventListener("change", async () => {
+      syncSubmitModeDisabled();
+      scheduleSaveSettings();
+    });
+  });
+
+  settingsEls.testApiBtn.addEventListener("click", () => {
+    testCurrentSettings().catch((error) => {
+      setTestStatus(`测试失败：${error.message}`, "error");
+    });
+  });
+}
+
+async function handleBatchReview() {
+  const urls = Array.from(selectedPendingUrls).filter(Boolean);
+  if (!urls.length) {
+    setStatus("请先选择要批阅的作业");
+    return;
+  }
+  await flushPendingSettingsSave();
+  const config = await readSharedReviewSettings();
+  if (!safeText(config.licenseKey)) {
+    setStatus("请先在设置里填写插件授权码");
+    setView("settings");
+    return;
+  }
+  if (!config.autoFill || !config.autoSubmit || safeText(config.submitMode) !== "next") {
+    setStatus("请先开启自动回填、自动提交，并选择“提交并进入下一份”模式");
+    setView("settings");
+    return;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "refreshPluginGatewaySession",
+      payload: {
+        timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+      },
+    });
+    if (!response || response.ok === false) {
+      throw new Error((response && response.error) || "插件授权校验失败");
+    }
+
+    const [firstUrl] = urls;
+    await chrome.storage.local.set({
+      [REVIEW_BATCH_QUEUE_STORAGE_KEY]: {
+        active: true,
+        urls,
+        currentIndex: 0,
+        startedAt: new Date().toISOString(),
+      },
+    });
+    let firstTabId = null;
+    if (typeof activeTabId === "number") {
+      const updated = await chrome.tabs.update(activeTabId, { url: firstUrl, active: true });
+      firstTabId = updated && updated.id;
+    } else {
+      const created = await chrome.tabs.create({ url: firstUrl, active: true });
+      firstTabId = created && created.id;
+    }
+
+    if (typeof firstTabId === "number") {
+      await waitForTabComplete(firstTabId, 20000);
+      await runTabActionFromPopup(firstTabId, "startAutoReviewFlow", {});
+    }
+
+    renderPluginAuthState(await fetchPluginAuthState(true, false, false));
+    setStatus(`已启动串行批阅，共 ${urls.length} 个作业，当前页完成后会自动进入下一份`);
+    window.close();
+  } catch (error) {
+    setStatus(`批量打开批阅页失败：${error.message}`);
+  }
+}
+
+function populateModelOptions(preferredModel) {
+  const nextModels = getSharedModelOptions();
+  const nextOptions = [...nextModels, { value: "__custom__", label: "自定义模型" }];
+  settingsEls.modelSelect.innerHTML = nextOptions
+    .map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`)
+    .join("");
+
+  if (preferredModel && nextModels.some((item) => item.value === preferredModel)) {
+    settingsEls.modelSelect.value = preferredModel;
+    settingsEls.model.value = preferredModel;
+    settingsEls.model.hidden = true;
+  } else {
+    settingsEls.modelSelect.value = "__custom__";
+    settingsEls.model.value = preferredModel || getDefaultReviewSettings().model || "";
+    settingsEls.model.hidden = false;
+  }
+}
+
+function getSettingsPayload() {
+  const selectedModel = safeText(settingsEls.modelSelect.value);
+  const typedModel = safeText(settingsEls.model.value);
+  return {
+    licenseKey: safeText(settingsEls.licenseKey.value),
+    rememberLicense: !!settingsEls.rememberLicense.checked,
     model: selectedModel && selectedModel !== "__custom__" ? selectedModel : typedModel,
     timeoutSeconds: Number(settingsEls.timeout.value),
     extraPrompt: safeText(settingsEls.extraPrompt.value),
@@ -615,110 +995,482 @@ async function flushPendingSettingsSave() {
 
 async function hydrateSettings() {
   settingsHydrating = true;
-  populateProviderOptions();
-
   const merged = await readSharedReviewSettings();
-  const providerValue = safeText(merged.provider) || inferProviderFromEndpoint(merged.endpoint) || "moonshot";
 
-  settingsEls.provider.value = providerValue;
-  settingsEls.endpoint.value = safeText(merged.endpoint);
-  settingsEls.apiKey.value = safeText(merged.apiKey);
-  settingsEls.rememberApiKey.checked = !!merged.rememberApiKey;
-  populateModelOptions(providerValue, safeText(merged.model));
+  const gatewayText = getGatewayBaseUrlText();
+  settingsEls.gatewayBaseUrl.value = gatewayText;
+  settingsEls.gatewayBaseUrl.title = gatewayText;
+  settingsEls.licenseKey.value = safeText(merged.licenseKey);
+  settingsEls.rememberLicense.checked = !!merged.rememberLicense;
+  populateModelOptions(safeText(merged.model));
   settingsEls.timeout.value = String(Number(merged.timeoutSeconds) || 20);
   settingsEls.extraPrompt.value = safeText(merged.extraPrompt);
   settingsEls.autoFill.checked = !!merged.autoFill;
   settingsEls.autoSubmit.checked = !!merged.autoSubmit;
   settingsEls.submitMode.value = safeText(merged.submitMode) || "current";
   syncSubmitModeDisabled();
-  setTestStatus("尚未测试连接", "neutral");
+  renderPluginAuthState(await fetchPluginAuthState(false, false, false));
   settingsHydrating = false;
 }
 
 async function testCurrentSettings() {
+  await flushPendingSettingsSave();
   const payload = getSettingsPayload();
-  if (!payload.endpoint) {
-    setTestStatus("请先填写 AI 接口地址", "error");
-    return;
+  if (!isSharedGatewayConfigured()) {
+    throw new Error("请先填写插件网关地址");
   }
-  if (!payload.apiKey) {
-    setTestStatus("请先填写 API Key", "error");
-    return;
+  if (!payload.licenseKey) {
+    throw new Error("请先填写插件授权码");
   }
   if (!payload.model) {
-    setTestStatus("请先填写模型名", "error");
-    return;
+    throw new Error("请先填写模型名");
   }
 
-  settingsEls.testApiBtn.disabled = true;
-  setTestStatus("正在测试连接...", "neutral");
+  settingsEls.testGatewayBtn.disabled = true;
+  setTestStatus("正在校验插件授权...", "neutral");
   try {
-    const permissionResult = await ensureSharedAiEndpointPermission(payload.endpoint, { requestIfMissing: true });
-    if (!permissionResult.ok) {
-      throw new Error("未获得当前 AI 地址的访问权限");
-    }
     const response = await chrome.runtime.sendMessage({
-      type: "testAiEndpoint",
-      payload: Object.assign({}, payload, {
+      type: "refreshPluginGatewaySession",
+      payload: {
         timeoutMs: Math.max(5000, Math.round((Number(payload.timeoutSeconds) || 20) * 1000)),
-      }),
+      },
     });
     if (!response || response.ok === false) {
-      throw new Error((response && response.error) || "测试失败");
+      throw new Error((response && response.error) || "授权校验失败");
     }
-    setTestStatus(`连接成功：${payload.model}`, "success");
-    setStatus("AI 接口连接正常");
+    renderPluginAuthState(await fetchPluginAuthState(true, false, false));
+    setStatus(response.message || "插件网关授权正常");
   } catch (error) {
-    setTestStatus(`测试失败：${error.message}`, "error");
-    setStatus(`AI 接口测试失败：${error.message}`);
+    renderPluginAuthState(await fetchPluginAuthState(false, false, false).catch(() => ({ lastError: error.message })));
+    setStatus(`插件网关校验失败：${error.message}`);
+    throw error;
   } finally {
-    settingsEls.testApiBtn.disabled = false;
+    settingsEls.testGatewayBtn.disabled = false;
   }
 }
 
 function bindSettingsEvents() {
-  settingsEls.provider.addEventListener("change", async () => {
-    const preset = getProviderPreset(settingsEls.provider.value);
-    settingsEls.endpoint.value = preset.endpoint || settingsEls.endpoint.value;
-    populateModelOptions(preset.id, preset.model);
-    setTestStatus("已切换预设，请重新测试连接。", "neutral");
-    scheduleSaveSettings();
-  });
-
   settingsEls.modelSelect.addEventListener("change", async () => {
     if (settingsEls.modelSelect.value !== "__custom__") {
       settingsEls.model.value = settingsEls.modelSelect.value;
+      settingsEls.model.hidden = true;
     } else {
+      settingsEls.model.hidden = false;
       settingsEls.model.value = "";
     }
-    setTestStatus("模型已切换，请重新测试连接。", "neutral");
+    setTestStatus("模型已切换，请在需要时重新校验授权。", "neutral");
     scheduleSaveSettings();
   });
 
-  [settingsEls.endpoint, settingsEls.apiKey, settingsEls.model, settingsEls.timeout, settingsEls.extraPrompt].forEach((node) => {
+  [settingsEls.licenseKey, settingsEls.model, settingsEls.timeout, settingsEls.extraPrompt].forEach((node) => {
     node.addEventListener("input", async () => {
-      if (node === settingsEls.endpoint) {
-        const nextProvider = inferProviderFromEndpoint(settingsEls.endpoint.value);
-        if (nextProvider !== settingsEls.provider.value) {
-          settingsEls.provider.value = nextProvider;
-          populateModelOptions(nextProvider, settingsEls.model.value);
-        }
+      if (node === settingsEls.licenseKey) {
+        setTestStatus("授权码已修改，请重新校验授权。", "neutral");
+      } else if (node === settingsEls.model) {
+        setTestStatus("模型已修改，请在需要时重新校验授权。", "neutral");
       }
-      setTestStatus("配置已修改，请重新测试连接。", "neutral");
       scheduleSaveSettings();
     });
   });
 
-  [settingsEls.rememberApiKey, settingsEls.autoFill, settingsEls.autoSubmit, settingsEls.submitMode].forEach((node) => {
+  [settingsEls.rememberLicense, settingsEls.autoFill, settingsEls.autoSubmit, settingsEls.submitMode].forEach((node) => {
     node.addEventListener("change", async () => {
       syncSubmitModeDisabled();
       scheduleSaveSettings();
     });
   });
 
-  settingsEls.testApiBtn.addEventListener("click", () => {
+  settingsEls.testGatewayBtn.addEventListener("click", () => {
     testCurrentSettings().catch((error) => {
-      setTestStatus(`测试失败：${error.message}`, "error");
+      setTestStatus(`授权校验失败：${error.message}`, "error");
+    });
+  });
+}
+
+async function handleBatchReview() {
+  const urls = Array.from(selectedPendingUrls).filter(Boolean);
+  if (!urls.length) {
+    setStatus("请至少选择一份作业。");
+    return;
+  }
+
+  await flushPendingSettingsSave();
+  const config = await readSharedReviewSettings();
+  const connectionMode = getConnectionModeValue(config.connectionMode);
+
+  if (!config.autoFill || !config.autoSubmit || safeText(config.submitMode) !== "next") {
+    setStatus("请先启用自动填写、自动提交，并选择“提交并进入下一份”。");
+    setView("settings");
+    return;
+  }
+
+  if (connectionMode === "custom_api") {
+    if (!safeText(config.endpoint)) {
+      setStatus("请先配置自定义 API 地址。");
+      setView("settings");
+      return;
+    }
+    if (!safeText(config.apiKey)) {
+      setStatus("请先配置自定义 API 密钥。");
+      setView("settings");
+      return;
+    }
+  } else if (!safeText(config.licenseKey)) {
+    setStatus("请先填写插件授权码。");
+    setView("settings");
+    return;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: connectionMode === "custom_api" ? "testAiEndpoint" : "refreshPluginGatewaySession",
+      payload: Object.assign(
+        {
+          connectionMode,
+          timeoutMs: Math.max(5000, Math.round((Number(config.timeoutSeconds) || 20) * 1000)),
+        },
+        connectionMode === "custom_api"
+          ? {
+              provider: safeText(config.provider) || inferProviderFromEndpoint(config.endpoint),
+              endpoint: safeText(config.endpoint),
+              apiKey: safeText(config.apiKey),
+              model: safeText(config.model),
+            }
+          : {}
+      ),
+    });
+
+    if (!response || response.ok === false) {
+      throw new Error((response && response.error) || "连接检查失败。");
+    }
+
+    const [firstUrl] = urls;
+    await chrome.storage.local.set({
+      [REVIEW_BATCH_QUEUE_STORAGE_KEY]: {
+        active: true,
+        urls,
+        currentIndex: 0,
+        startedAt: new Date().toISOString(),
+      },
+    });
+
+    let firstTabId = null;
+    if (typeof activeTabId === "number") {
+      const updated = await chrome.tabs.update(activeTabId, { url: firstUrl, active: true });
+      firstTabId = updated && updated.id;
+    } else {
+      const created = await chrome.tabs.create({ url: firstUrl, active: true });
+      firstTabId = created && created.id;
+    }
+
+    if (typeof firstTabId === "number") {
+      await waitForTabComplete(firstTabId, 20000);
+      await runTabActionFromPopup(firstTabId, "startAutoReviewFlow", {});
+    }
+
+    if (connectionMode === "custom_api") {
+      syncConnectionModeUi(connectionMode, {
+        state: {
+          ok: true,
+          provider: safeText(config.provider) || inferProviderFromEndpoint(config.endpoint),
+          endpoint: safeText(config.endpoint),
+          message: "自定义 API 测试通过。",
+        },
+      });
+    } else {
+      syncConnectionModeUi(connectionMode, {
+        state: await fetchPluginAuthState(true, false, false),
+      });
+    }
+
+    setStatus(`已开始批量批阅，共 ${urls.length} 份作业。`);
+    window.close();
+  } catch (error) {
+    setStatus(`启动批量批阅失败：${error.message}`);
+  }
+}
+
+function populateModelOptions(preferredModel) {
+  const connectionMode = getConnectionModeValue(settingsEls.connectionMode && settingsEls.connectionMode.value);
+  const providerId =
+    safeText(settingsEls.provider && settingsEls.provider.value) ||
+    inferProviderFromEndpoint(settingsEls.endpoint && settingsEls.endpoint.value) ||
+    "custom";
+  const nextModels = getSharedModelOptions(connectionMode, providerId);
+  const nextOptions = [...nextModels, { value: "__custom__", label: "自定义模型" }];
+  settingsEls.modelSelect.innerHTML = nextOptions
+    .map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`)
+    .join("");
+
+  if (preferredModel && nextModels.some((item) => item.value === preferredModel)) {
+    settingsEls.modelSelect.value = preferredModel;
+    settingsEls.model.value = preferredModel;
+    settingsEls.model.hidden = true;
+  } else {
+    settingsEls.modelSelect.value = "__custom__";
+    settingsEls.model.value = preferredModel || getDefaultReviewSettings().model || "";
+    settingsEls.model.hidden = false;
+  }
+}
+
+function getSettingsPayload() {
+  const selectedModel = safeText(settingsEls.modelSelect.value);
+  const typedModel = safeText(settingsEls.model.value);
+  const connectionMode = getConnectionModeValue(settingsEls.connectionMode && settingsEls.connectionMode.value);
+  return {
+    connectionMode,
+    gatewayBaseUrl: safeText(settingsEls.gatewayBaseUrl.value),
+    provider:
+      connectionMode === "custom_api"
+        ? safeText(settingsEls.provider.value) || inferProviderFromEndpoint(settingsEls.endpoint.value)
+        : "plugin_gateway",
+    endpoint: connectionMode === "custom_api" ? safeText(settingsEls.endpoint.value) : "",
+    apiKey: connectionMode === "custom_api" ? safeText(settingsEls.apiKey.value) : "",
+    rememberApiKey: connectionMode === "custom_api" ? !!settingsEls.rememberApiKey.checked : false,
+    licenseKey: safeText(settingsEls.licenseKey.value),
+    rememberLicense: !!settingsEls.rememberLicense.checked,
+    model: selectedModel && selectedModel !== "__custom__" ? selectedModel : typedModel,
+    timeoutSeconds: Number(settingsEls.timeout.value),
+    extraPrompt: safeText(settingsEls.extraPrompt.value),
+    autoFill: !!settingsEls.autoFill.checked,
+    autoSubmit: !!settingsEls.autoSubmit.checked,
+    submitMode: safeText(settingsEls.submitMode.value) || "current",
+  };
+}
+
+async function saveSettings() {
+  if (settingsHydrating) {
+    return;
+  }
+  await writeSharedReviewSettings(getSettingsPayload());
+  setStatus("设置已保存。");
+}
+
+function syncSubmitModeDisabled() {
+  settingsEls.submitMode.disabled = !settingsEls.autoSubmit.checked;
+}
+
+function scheduleSaveSettings() {
+  if (settingsHydrating) {
+    return;
+  }
+  if (settingsPersistTimer) {
+    window.clearTimeout(settingsPersistTimer);
+  }
+  settingsPersistTimer = window.setTimeout(() => {
+    settingsPersistTimer = null;
+    saveSettings().catch((error) => {
+      setStatus(`保存设置失败：${error.message}`);
+    });
+  }, 250);
+}
+
+async function flushPendingSettingsSave() {
+  if (!settingsPersistTimer) {
+    return;
+  }
+  window.clearTimeout(settingsPersistTimer);
+  settingsPersistTimer = null;
+  await saveSettings();
+}
+
+async function hydrateSettings() {
+  settingsHydrating = true;
+  const merged = await readSharedReviewSettings();
+  populateProviderOptions();
+
+  const gatewayText = safeText(merged.gatewayBaseUrl) || getGatewayBaseUrlText();
+  settingsEls.gatewayBaseUrl.value = gatewayText;
+  settingsEls.gatewayBaseUrl.title = gatewayText;
+  settingsEls.connectionMode.value = getConnectionModeValue(merged.connectionMode);
+  settingsEls.licenseKey.value = safeText(merged.licenseKey);
+  settingsEls.rememberLicense.checked = !!merged.rememberLicense;
+  settingsEls.provider.value = safeText(merged.provider) || inferProviderFromEndpoint(merged.endpoint) || "custom";
+  settingsEls.endpoint.value = safeText(merged.endpoint);
+  settingsEls.apiKey.value = safeText(merged.apiKey);
+  settingsEls.rememberApiKey.checked = !!merged.rememberApiKey;
+  populateModelOptions(safeText(merged.model));
+  settingsEls.timeout.value = String(Number(merged.timeoutSeconds) || 20);
+  settingsEls.extraPrompt.value = safeText(merged.extraPrompt);
+  settingsEls.autoFill.checked = !!merged.autoFill;
+  settingsEls.autoSubmit.checked = !!merged.autoSubmit;
+  settingsEls.submitMode.value = safeText(merged.submitMode) || "current";
+  syncSubmitModeDisabled();
+
+  if (isGatewayModeSelected(merged.connectionMode)) {
+    syncConnectionModeUi(merged.connectionMode, {
+      state: await fetchPluginAuthState(false, false, false),
+    });
+  } else {
+    syncConnectionModeUi(merged.connectionMode, {
+      state: {
+        provider: safeText(merged.provider) || inferProviderFromEndpoint(merged.endpoint),
+        endpoint: safeText(merged.endpoint),
+        message: "自定义 API 模式会使用你自己的接口地址和 API 密钥。",
+      },
+    });
+  }
+
+  settingsHydrating = false;
+}
+
+async function testCurrentSettings() {
+  await flushPendingSettingsSave();
+  const payload = getSettingsPayload();
+  const gatewayMode = isGatewayModeSelected(payload.connectionMode);
+
+  if (!payload.model) {
+    throw new Error("请先填写模型名。");
+  }
+
+  settingsEls.testGatewayBtn.disabled = true;
+  setTestStatus(gatewayMode ? "正在校验插件网关授权..." : "正在测试自定义 API...", "neutral");
+
+  try {
+    let response;
+    if (gatewayMode) {
+      if (!isSharedGatewayConfigured(payload.gatewayBaseUrl)) {
+        throw new Error("请先填写插件网关地址。");
+      }
+      if (!payload.licenseKey) {
+        throw new Error("请先填写插件授权码。");
+      }
+      response = await chrome.runtime.sendMessage({
+        type: "refreshPluginGatewaySession",
+        payload: {
+          connectionMode: payload.connectionMode,
+          timeoutMs: Math.max(5000, Math.round((Number(payload.timeoutSeconds) || 20) * 1000)),
+        },
+      });
+      if (!response || response.ok === false) {
+        throw new Error((response && response.error) || "插件网关授权失败。");
+      }
+      syncConnectionModeUi(payload.connectionMode, {
+        state: await fetchPluginAuthState(true, false, false),
+      });
+      setStatus(response.message || "插件网关授权已就绪。");
+    } else {
+      if (!payload.endpoint) {
+        throw new Error("请先填写自定义 API 地址。");
+      }
+      if (!payload.apiKey) {
+        throw new Error("请先填写自定义 API 密钥。");
+      }
+      response = await chrome.runtime.sendMessage({
+        type: "testAiEndpoint",
+        payload: {
+          connectionMode: payload.connectionMode,
+          provider: payload.provider,
+          endpoint: payload.endpoint,
+          apiKey: payload.apiKey,
+          model: payload.model,
+          timeoutMs: Math.max(5000, Math.round((Number(payload.timeoutSeconds) || 20) * 1000)),
+        },
+      });
+      if (!response || response.ok === false) {
+        throw new Error((response && response.error) || "自定义 API 测试失败。");
+      }
+      syncConnectionModeUi(payload.connectionMode, {
+        state: {
+          ok: true,
+          provider: payload.provider,
+          endpoint: payload.endpoint,
+          message: `自定义 API 已就绪：${payload.model}`,
+        },
+      });
+      setStatus("自定义 API 连接已就绪。");
+    }
+  } catch (error) {
+    if (gatewayMode) {
+      syncConnectionModeUi(payload.connectionMode, {
+        state: await fetchPluginAuthState(false, false, false).catch(() => ({ lastError: error.message })),
+      });
+    } else {
+      syncConnectionModeUi(payload.connectionMode, {
+        state: {
+          ok: false,
+          provider: payload.provider,
+          endpoint: payload.endpoint,
+          message: error.message,
+        },
+      });
+    }
+    throw error;
+  } finally {
+    settingsEls.testGatewayBtn.disabled = false;
+  }
+}
+
+function bindSettingsEvents() {
+  settingsEls.connectionMode.addEventListener("change", () => {
+    const mode = getConnectionModeValue(settingsEls.connectionMode.value);
+    if (mode === "custom_api") {
+      const preset = getProviderPreset(safeText(settingsEls.provider.value) || "moonshot");
+      if (!safeText(settingsEls.endpoint.value) && safeText(preset.endpoint)) {
+        settingsEls.endpoint.value = preset.endpoint;
+      }
+    }
+    populateModelOptions(safeText(settingsEls.model.value));
+    syncConnectionModeUi(mode);
+    setTestStatus(mode === "custom_api" ? "已切换到自定义 API 模式。" : "已切换到插件网关模式。", "neutral");
+    scheduleSaveSettings();
+  });
+
+  settingsEls.provider.addEventListener("change", () => {
+    const preset = getProviderPreset(settingsEls.provider.value);
+    if (safeText(preset.endpoint)) {
+      settingsEls.endpoint.value = preset.endpoint;
+    }
+    populateModelOptions(safeText(settingsEls.model.value) || safeText(preset.model));
+    syncConnectionModeUi("custom_api");
+    setTestStatus("接口提供方已变更，请重新测试自定义 API。", "neutral");
+    scheduleSaveSettings();
+  });
+
+  settingsEls.modelSelect.addEventListener("change", () => {
+    if (settingsEls.modelSelect.value !== "__custom__") {
+      settingsEls.model.value = settingsEls.modelSelect.value;
+      settingsEls.model.hidden = true;
+    } else {
+      settingsEls.model.hidden = false;
+      settingsEls.model.value = "";
+    }
+    scheduleSaveSettings();
+  });
+
+  [settingsEls.gatewayBaseUrl, settingsEls.licenseKey, settingsEls.endpoint, settingsEls.apiKey, settingsEls.model, settingsEls.timeout, settingsEls.extraPrompt].forEach((node) => {
+    node.addEventListener("input", () => {
+      const gatewayMode = isGatewayModeSelected(settingsEls.connectionMode.value);
+      if (node === settingsEls.gatewayBaseUrl && gatewayMode) {
+        setTestStatus("插件网关地址已变更，请重新校验授权。", "neutral");
+      }
+      if (node === settingsEls.endpoint && !gatewayMode) {
+        const inferredProvider = inferProviderFromEndpoint(settingsEls.endpoint.value);
+        if (inferredProvider && inferredProvider !== "custom") {
+          settingsEls.provider.value = inferredProvider;
+        }
+        syncConnectionModeUi("custom_api");
+      }
+      if (node === settingsEls.licenseKey && gatewayMode) {
+        setTestStatus("插件授权码已变更，请重新校验。", "neutral");
+      } else if ((node === settingsEls.endpoint || node === settingsEls.apiKey) && !gatewayMode) {
+        setTestStatus("自定义 API 设置已变更，请重新测试。", "neutral");
+      }
+      scheduleSaveSettings();
+    });
+  });
+
+  [settingsEls.rememberLicense, settingsEls.rememberApiKey, settingsEls.autoFill, settingsEls.autoSubmit, settingsEls.submitMode].forEach((node) => {
+    node.addEventListener("change", () => {
+      syncSubmitModeDisabled();
+      scheduleSaveSettings();
+    });
+  });
+
+  settingsEls.testGatewayBtn.addEventListener("click", () => {
+    testCurrentSettings().catch((error) => {
+      setTestStatus(error.message, "error");
+      setStatus(error.message);
     });
   });
 }
